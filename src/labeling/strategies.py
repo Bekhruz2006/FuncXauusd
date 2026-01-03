@@ -23,55 +23,49 @@ def calculate_labels_one_direction(
     markup: float,
     min_bars: int,
     max_bars: int,
-    direction: str
+    direction: str,
+    atr_data: np.ndarray
 ) -> np.ndarray:
-    """
-    Расчет меток для однонаправленной торговли (Numba-optimized)
-    
-    Логика:
-        - Для каждого бара берется случайное окно [min_bars, max_bars]
-        - Проверяется, достигнет ли цена markup в этом окне
-        - Label = 1 если достигнет, 0 если нет
-    
-    Args:
-        close_data: Массив цен закрытия
-        markup: Порог движения цены (в пунктах инструмента)
-        min_bars: Минимальный горизонт прогноза
-        max_bars: Максимальный горизонт прогноза
-        direction: 'buy' или 'sell'
-    
-    Returns:
-        np.ndarray: Массив меток [0, 1]
-    
-    Example:
-        >>> close = np.array([100, 101, 102, 99, 98])
-        >>> labels = calculate_labels_one_direction(close, 2.0, 1, 3, 'buy')
-        >>> # labels[0] = 1 если в следующих 1-3 барах цена >= 102
-    """
     labels = np.empty(len(close_data) - max_bars, dtype=np.float64)
     
     for i in range(len(labels)):
-        # Случайный горизонт прогноза
-        rand = random.randint(min_bars, max_bars)
         curr_pr = close_data[i]
-        future_pr = close_data[i + rand]
+        atr_val = atr_data[i]
         
-        if direction == "sell":
-            # Для продажи: цена должна упасть на markup
-            if (future_pr + markup) < curr_pr:
-                labels[i] = 1.0
-            else:
-                labels[i] = 0.0
-                
-        elif direction == "buy":
-            # Для покупки: цена должна вырасти на markup
-            if (future_pr - markup) > curr_pr:
-                labels[i] = 1.0
-            else:
-                labels[i] = 0.0
-        else:
-            # Некорректное направление - все нули
+        if np.isnan(atr_val):
             labels[i] = 0.0
+            continue
+        
+        sl = curr_pr - 2.0 * atr_val if direction == "buy" else curr_pr + 2.0 * atr_val
+        tp = curr_pr + 2.5 * atr_val if direction == "buy" else curr_pr - 2.5 * atr_val
+        
+        sl_hit = False
+        tp_hit = False
+        
+        for j in range(min_bars, min(max_bars + 1, len(close_data) - i)):
+            future_pr = close_data[i + j]
+            
+            if direction == "buy":
+                if future_pr <= sl:
+                    sl_hit = True
+                    break
+                if future_pr >= tp:
+                    tp_hit = True
+                    break
+            else:
+                if future_pr >= sl:
+                    sl_hit = True
+                    break
+                if future_pr <= tp:
+                    tp_hit = True
+                    break
+        
+        if tp_hit:
+            labels[i] = 1.0
+        elif sl_hit:
+            labels[i] = 0.0
+        else:
+            labels[i] = 0.2
     
     return labels
 

@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-Основной скрипт обучения кластерной торговой модели
-Реализует автопоиск оптимальной конфигурации с валидацией
-"""
 
 import sys
 import time
@@ -11,7 +7,6 @@ import warnings
 from pathlib import Path
 from datetime import datetime
 
-# Добавляем корень проекта в путь
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
@@ -25,32 +20,23 @@ from src.backtesting.tester import test_model_one_direction
 
 warnings.filterwarnings('ignore')
 
-# ==================== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ====================
 CACHED_PRICES = None
 BEST_GLOBAL_MODEL = None
 SEARCH_HISTORY = []
 
 
 def load_config(config_path: str = "config/training_config.yaml") -> dict:
-    """Загрузка конфигурации из YAML"""
     config_file = project_root / config_path
     with open(config_file, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
 
 def generate_search_configs(base_config: dict) -> list:
-    """
-    Генерация конфигураций для поиска
-    
-    Returns:
-        list: Список конфигураций для тестирования
-    """
     from itertools import product
     
     search_space = base_config['search']['space']
     configs = []
     
-    # Комбинаторный поиск
     for (markup, n_clusters, periods, meta_periods, 
          depth, iterations, min_samples) in product(
         search_space['markup'],
@@ -77,33 +63,19 @@ def generate_search_configs(base_config: dict) -> list:
 
 
 def prioritize_configs(configs: list) -> list:
-    """
-    Приоритизация конфигураций по ожидаемому качеству
-    Предпочитаем средние значения и более сложные модели
-    """
     def priority_score(c):
         score = 0
         score += abs(c['markup'] - 0.25) * 10
         score += abs(c['n_clusters'] - 8) * 5
         score += abs(c['depth'] - 5) * 3
         score += abs(c['iterations'] - 700) / 100
-        score -= c['min_samples'] / 1000  # Больше данных = лучше
+        score -= c['min_samples'] / 1000
         return score
     
     return sorted(configs, key=priority_score)
 
 
 def train_single_config(config: dict, iteration: int) -> dict:
-    """
-    Обучение со всеми кластерами для данной конфигурации
-    
-    Args:
-        config: Конфигурация обучения
-        iteration: Номер текущей итерации
-    
-    Returns:
-        dict: Результаты обучения или None
-    """
     print(f"\n{'─'*70}")
     print(f"🔄 Попытка {iteration}/{config['search']['max_iterations']}")
     print(f"{'─'*70}")
@@ -117,17 +89,13 @@ def train_single_config(config: dict, iteration: int) -> dict:
     print(f"    • Мин. примеров: {config['min_samples']}")
     
     try:
-        # Инициализация тренера
         trainer = ClusterModelTrainer(config)
-        
-        # Обучение всех кластеров
         results = trainer.train_all_clusters()
         
         if not results or len(results) == 0:
             print(f"  ❌ Ни одна модель не обучена")
             return None
         
-        # Выбор лучшей модели (по Val Accuracy)
         best_model = max(results, key=lambda x: x['val_acc'])
         
         print(f"\n  🏆 Лучшая модель кластера {best_model['cluster']}:")
@@ -147,7 +115,6 @@ def train_single_config(config: dict, iteration: int) -> dict:
 
 def print_final_results(best_model_result: dict, search_history: list, 
                        elapsed_time: float):
-    """Вывод финальных результатов поиска"""
     print(f"\n{'='*70}")
     print(f"  📊 РЕЗУЛЬТАТЫ ПОИСКА")
     print(f"{'='*70}")
@@ -183,7 +150,6 @@ def print_final_results(best_model_result: dict, search_history: list,
 
 
 def print_search_history(history: list, top_n: int = 10):
-    """Вывод истории поиска"""
     if len(history) <= 1:
         return
     
@@ -205,12 +171,10 @@ def print_search_history(history: list, top_n: int = 10):
 
 
 def main():
-    """Главная функция"""
     print("\n" + "="*70)
     print(" "*8 + "🎯 АВТОПОИСК ОПТИМАЛЬНОЙ КОНФИГУРАЦИИ (40 попыток) 🎯")
     print("="*70 + "\n")
     
-    # Загрузка конфигурации
     config = load_config()
     
     print("📋 Параметры поиска:")
@@ -219,21 +183,17 @@ def main():
     print(f"  • Максимум попыток: {config['search']['max_iterations']}")
     print(f"  • Период данных: {config['data']['backward']} - {config['data']['full_forward']}")
     
-    # Кэширование данных
     print("\n🔄 Загрузка и кэширование данных...")
     cache_prices(config)
     
-    # Генерация конфигураций
     print(f"\n🔍 Генерация конфигураций...")
     all_configs = generate_search_configs(config)
     print(f"📊 Сгенерировано {len(all_configs)} конфигураций")
     
-    # Приоритизация
     prioritized_configs = prioritize_configs(all_configs)
     configs_to_test = prioritized_configs[:config['search']['max_iterations']]
     print(f"⚡ Будет протестировано {len(configs_to_test)} лучших\n")
     
-    # Основной цикл поиска
     start_time = time.time()
     target_acc = config['search']['targets']['val_accuracy']
     
@@ -246,7 +206,6 @@ def main():
         SEARCH_HISTORY.append(result)
         best_model = result['best_model']
         
-        # Проверка достижения цели
         if best_model['val_acc'] >= target_acc:
             print(f"\n{'='*70}")
             print(f"  🎉 ДОСТИГНУТА ЦЕЛЕВАЯ ТОЧНОСТЬ НА ПОПЫТКЕ {idx}!")
@@ -255,7 +214,6 @@ def main():
             BEST_GLOBAL_MODEL = result
             break
         
-        # Обновление лучшей модели
         if (BEST_GLOBAL_MODEL is None or 
             best_model['val_acc'] > BEST_GLOBAL_MODEL['best_model']['val_acc']):
             BEST_GLOBAL_MODEL = result
@@ -263,13 +221,11 @@ def main():
     
     elapsed = time.time() - start_time
     
-    # Вывод результатов
     if not print_final_results(BEST_GLOBAL_MODEL, SEARCH_HISTORY, elapsed):
         return 1
     
     print_search_history(SEARCH_HISTORY)
     
-    # Финальное тестирование
     print(f"\n📈 Финальное тестирование с визуализацией...\n")
     best = BEST_GLOBAL_MODEL['best_model']
     best_config = BEST_GLOBAL_MODEL['config']
@@ -291,7 +247,6 @@ def main():
         print(f"\n❌ Ошибка тестирования: {e}")
         R2_final = best['r2']
     
-    # Экспорт
     print(f"\n💾 Экспорт в MetaTrader 5...")
     try:
         export_to_onnx(
@@ -312,7 +267,6 @@ def main():
         print(f"\n❌ Ошибка экспорта: {e}")
         return 1
     
-    # Статус достижения цели
     status = 'ДА' if best['val_acc'] >= target_acc else f'НЕТ (лучший {best["val_acc"]:.4f})'
     print(f"\nЦель достигнута: {status}\n")
     

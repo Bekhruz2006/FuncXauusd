@@ -1,17 +1,11 @@
 # ==================== ML / DATA SCIENCE ====================
-# Gradient boosting
 catboost==1.2.7
-
-# Machine learning
 scikit-learn==1.5.2
 scipy==1.14.1
-
-# Data manipulation
 pandas==2.2.3
 numpy==1.26.4
 
 # ==================== PERFORMANCE ====================
-# JIT compilation для ускорения
 numba==0.60.0
 
 # ==================== VISUALIZATION ====================
@@ -19,40 +13,13 @@ matplotlib==3.9.2
 seaborn==0.13.2
 
 # ==================== CONFIG / UTILS ====================
-# YAML конфиги
 pyyaml==6.0.2
-
-# Progress bars
 tqdm==4.66.5
 
-# ==================== OPTIONAL (для расширения) ====================
-# ONNX runtime (если нужна локальная проверка)
+# ==================== TESTING ====================
+pytest==8.3.3
+pytest-cov==5.0.0
+pytest-timeout==2.3.1
+
+# ==================== OPTIONAL ====================
 # onnxruntime==1.19.2
-
-# Логирование
-# loguru==0.7.2
-
-# Гиперпараметр оптимизация
-# optuna==3.6.1
-
-# Feature store (для production)
-# feast==0.39.0
-
-# Monitoring
-# mlflow==2.16.2
-
-# ==================== DEVELOPMENT ====================
-# Code formatting
-# black==24.8.0
-# isort==5.13.2
-
-# Linting
-# flake8==7.1.1
-# pylint==3.2.7
-
-# Type checking
-# mypy==1.11.2
-
-# Testing
-# pytest==8.3.3
-# pytest-cov==5.0.0
