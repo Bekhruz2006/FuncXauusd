@@ -423,24 +423,28 @@ class DegradationMonitor:
         }
     
     def _log_update(self, trade_result: Dict) -> None:
-        """Логирование обновления"""
-        log_path = Path(self.config['log_path'])
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        log_entry = {
-            'timestamp': datetime.now().isoformat(),
-            'trade': trade_result,
-            'status': self.status.value,
-            'metrics': {
-                'total_trades': self.metrics.total_trades,
-                'current_drawdown': self.metrics.current_drawdown,
-                'losing_streak': self.metrics.current_losing_streak,
-                'equity': self.metrics.current_equity
+            """Логирование обновления"""
+            log_path = Path(self.config['log_path'])
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            trade_copy = trade_result.copy()
+            if 'timestamp' in trade_copy and isinstance(trade_copy['timestamp'], datetime):
+                trade_copy['timestamp'] = trade_copy['timestamp'].isoformat()
+            
+            log_entry = {
+                'timestamp': datetime.now().isoformat(),
+                'trade': trade_copy,
+                'status': self.status.value,
+                'metrics': {
+                    'total_trades': self.metrics.total_trades,
+                    'current_drawdown': self.metrics.current_drawdown,
+                    'losing_streak': self.metrics.current_losing_streak,
+                    'equity': self.metrics.current_equity
+                }
             }
-        }
-        
-        with open(log_path, 'a') as f:
-            f.write(json.dumps(log_entry) + '\n')
+            
+            with open(log_path, 'a') as f:
+                f.write(json.dumps(log_entry) + '\n')
     
     def print_status(self) -> None:
         """Вывод текущего статуса в консоль"""

@@ -175,7 +175,7 @@ def check_config():
     config_path = project_root / 'config' / 'training_config.yaml'
     
     try:
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
         required_keys = [

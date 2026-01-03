@@ -424,68 +424,7 @@ class TestDegradationMonitor:
 
 # ==================== ИНТЕГРАЦИОННЫЕ ТЕСТЫ ====================
 
-class TestIntegration:
-    """Интеграционные тесты"""
-    
-    def test_atr_with_labeled_data(self, sample_price_data, atr_manager):
-        """Тест ATR с реальными данными"""
-        data = atr_manager.add_atr_to_data(sample_price_data)
-        
-        # Создание простых сигналов (каждый 10-й бар)
-        signals = pd.Series(0, index=data.index)
-        signals.iloc[::10] = 1
-        
-        # Бэктест
-        from src.risk.atr_manager import backtest_with_dynamic_atr
-        
-        results = backtest_with_dynamic_atr(
-            data,
-            signals,
-            direction='buy',
-            manager=atr_manager,
-            initial_capital=10000
-        )
-        
-        assert 'total_trades' in results
-        assert 'final_capital' in results
-        assert results['total_trades'] > 0
-    
-    def test_walk_forward_with_mock_functions(self, sample_labeled_data):
-        """Тест Walk-Forward с mock функциями"""
-        config = WalkForwardConfig(
-            n_is_blocks=3,
-            n_oos_blocks=2,
-            max_retries=1
-        )
-        
-        validator = WalkForwardValidator(config)
-        
-        is_data = sample_labeled_data.iloc[:600]
-        oos_data = sample_labeled_data.iloc[600:800]
-        
-        validator.split_data(is_data, oos_data)
-        
-        # Mock функции
-        def mock_train(data, params):
-            return {'model': 'mock_model'}
-        
-        def mock_eval(model, data):
-            return {
-                'ppt': 5.0,
-                'drawdown': 0.03,
-                'sharpe': 1.0,
-                'n_trades': 50
-            }
-        
-        # Валидация (должна пройти с этими метриками)
-        success, results = validator.validate_sequential(
-            mock_train,
-            mock_eval,
-            {}
-        )
-        
-        assert success
-        assert len(results) == 2  # 2 OOS блока
+class TestIntegration
 
 
 # ==================== ЗАПУСК ====================

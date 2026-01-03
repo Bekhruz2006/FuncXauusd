@@ -5,43 +5,34 @@ project:
   
 symbol:
   name: "XAUUSD_H1"
-  timeframe: "H1"  # H1, M15, M30, M5, D1, W1, MN
+  timeframe: "H1"
 
 # ==================== НАПРАВЛЕНИЕ ТОРГОВЛИ ====================
 trading:
-  direction: "buy"  # "buy" или "sell"
+  direction: "buy"
   
-  # Риск-менеджмент
   risk:
-    stop_loss: 10.0        # в пунктах инструмента
-    take_profit: 5.0       # в пунктах инструмента
-    risk_per_trade: 0.005  # 0.5% от капитала
+    stop_loss: 10.0
+    take_profit: 5.0
+    risk_per_trade: 0.005
     max_positions: 3
-    spread_limit: 25       # максимальный спред в пунктах
+    spread_limit: 25
     
-  # Разметка данных
   labeling:
-    markup: 0.25           # порог для определения сигнала
-    min_bars: 1            # минимум баров в будущее
-    max_bars: 15           # максимум баров в будущее
+    markup: 0.25
+    min_bars: 1
+    max_bars: 15
 
 # ==================== ВРЕМЕННЫЕ ГРАНИЦЫ ====================
 data:
-  # Полный период данных
   backward: "2004-06-11"
-  
-  # Граница In-Sample / Out-of-Sample
   forward: "2020-01-01"
-  
-  # Конец данных (для финального теста)
   full_forward: "2026-01-01"
   
-  # Пути к файлам
   paths:
     raw: "./data/raw"
     processed: "./data/processed"
     
-  # Мультифрейм (для будущей реализации)
   multiframe:
     enabled: false
     timeframes:
@@ -55,43 +46,17 @@ data:
       - "1w"
       - "1Month"
 
-# ==================== АВТОПОИСК ГИПЕРПАРАМЕТРОВ ====================
-search:
-  # Целевые метрики
-  targets:
-    val_accuracy: 0.75     # минимальная точность на валидации
-    r2_score: 0.95         # минимальный R²
-  
-  # Управление поиском
-  max_iterations: 40       # максимум попыток
-  early_stopping: true     # остановка при достижении цели
-  
-  # Пространство поиска
-  space:
-    markup: [0.15, 0.18, 0.2, 0.22, 0.25, 0.28, 0.3, 0.35, 0.4]
-    n_clusters: [6, 7, 8, 9, 10, 11, 12]
-    
-    periods:
-      - [5, 35, 65, 95, 125, 155, 185, 215, 245, 275]        # 30 шаг
-      - [5, 30, 55, 80, 105, 130, 155, 180, 205, 230]        # 25 шаг
-      - [5, 25, 45, 65, 85, 105, 125, 145, 165, 185]         # 20 шаг
-      - [5, 10, 15, 20, 30, 40, 50, 75, 100, 150, 200, 250]  # произвольный
-      - [5, 15, 30, 50, 75, 100, 150, 200]                   # основные уровни
-    
-    meta_periods:
-      - [5]
-      - [10]
-      - [5, 10]
-      - [5, 15]
-    
-    model_depth: [4, 5, 6, 7]
-    model_iterations: [300, 500, 700, 1000]
-    min_samples: [600, 800, 1000, 1200, 1500]  # минимум примеров в кластере
+# ==================== ПРИЗНАКИ ====================
+periods: [5, 35, 65, 95, 125, 155, 185, 215, 245, 275]
+periods_meta: [5]
+
+# ==================== РАЗМЕТКА ====================
+markup: 0.25
 
 # ==================== КЛАСТЕРИЗАЦИЯ ====================
 clustering:
-  algorithm: "kmeans"      # kmeans, dbscan, hdbscan
-  n_clusters: 8            # по умолчанию (переопределяется в search)
+  algorithm: "kmeans"
+  n_clusters: 8
   random_state: 42
   n_init: 10
 
@@ -116,8 +81,8 @@ model:
   meta:
     type: "CatBoostClassifier"
     params:
-      iterations: 350      # половина от main
-      depth: 4             # меньше чем main
+      iterations: 350
+      depth: 4
       learning_rate: 0.03
       l2_leaf_reg: 3
       eval_metric: "F1"
@@ -131,34 +96,29 @@ model:
 
 # ==================== ВАЛИДАЦИЯ ====================
 validation:
-  # Разделение данных
   train_size: 0.75
   test_size: 0.25
   shuffle: true
   stratify: true
   random_state: 42
   
-  # Критерии отбора
   criteria:
-    min_class_balance: 0.2      # минимальный баланс классов
-    min_samples_per_class: 100  # минимум примеров в классе
-    max_drawdown_oos: 0.05      # максимальная просадка на OOS (5%)
-    max_drawdown_oot: 0.10      # максимальная просадка на OOT (10%)
+    min_class_balance: 0.2
+    min_samples_per_class: 100
+    max_drawdown_oos: 0.05
+    max_drawdown_oot: 0.10
 
 # ==================== ЭКСПОРТ ====================
 export:
-  # Пути
   paths:
     models: "./models/trained"
     onnx: "./models/exported"
     mql: "./mql5/Include"
   
-  # Форматы
   formats:
-    - "onnx"               # для MT5
-    - "cbm"                # нативный CatBoost
+    - "onnx"
+    - "cbm"
   
-  # ONNX параметры
   onnx:
     domain: "ai.catboost"
     model_version: 1
@@ -166,7 +126,6 @@ export:
 
 # ==================== БЭКТЕСТИНГ ====================
 backtest:
-  # Метрики для оценки
   metrics:
     - "r2_score"
     - "sharpe_ratio"
@@ -174,32 +133,27 @@ backtest:
     - "profit_factor"
     - "win_rate"
   
-  # Визуализация
   plot:
     enabled: true
     save_path: "./results/plots"
 
 # ==================== ЛОГИРОВАНИЕ ====================
 logging:
-  level: "INFO"            # DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
   
-  # Файлы логов
   files:
     main: "./logs/training.log"
     errors: "./logs/errors.log"
 
 # ==================== ПРОИЗВОДИТЕЛЬНОСТЬ ====================
 performance:
-  # Параллелизация
-  n_jobs: -1               # -1 = все ядра
+  n_jobs: -1
   
-  # Кэширование
   cache:
     enabled: true
     path: "./cache"
   
-  # Numba JIT
   numba:
     enabled: true
     parallel: true
@@ -207,4 +161,34 @@ performance:
 # ==================== ВОСПРОИЗВОДИМОСТЬ ====================
 reproducibility:
   random_seed: 42
-  deterministic: true      # детерминированность (медленнее, но стабильно)
+  deterministic: true
+
+# ==================== АВТОПОИСК ГИПЕРПАРАМЕТРОВ ====================
+search:
+  targets:
+    val_accuracy: 0.75
+    r2_score: 0.95
+  
+  max_iterations: 40
+  early_stopping: true
+  
+  space:
+    markup: [0.15, 0.18, 0.2, 0.22, 0.25, 0.28, 0.3, 0.35, 0.4]
+    n_clusters: [6, 7, 8, 9, 10, 11, 12]
+    
+    periods:
+      - [5, 35, 65, 95, 125, 155, 185, 215, 245, 275]
+      - [5, 30, 55, 80, 105, 130, 155, 180, 205, 230]
+      - [5, 25, 45, 65, 85, 105, 125, 145, 165, 185]
+      - [5, 10, 15, 20, 30, 40, 50, 75, 100, 150, 200, 250]
+      - [5, 15, 30, 50, 75, 100, 150, 200]
+    
+    meta_periods:
+      - [5]
+      - [10]
+      - [5, 10]
+      - [5, 15]
+    
+    model_depth: [4, 5, 6, 7]
+    model_iterations: [300, 500, 700, 1000]
+    min_samples: [600, 800, 1000, 1200, 1500]

@@ -147,30 +147,42 @@ class TestDataPipeline:
         assert (atr.dropna() >= 0).all()
     
     def test_labeling_with_atr(self, mock_config):
-        from src.data.loader import load_price_data
-        from src.features.engineering import create_features
-        from src.labeling.strategies import get_labels_one_direction
-        
-        data = load_price_data(mock_config)
-        
-        data['high'] = data['close'] * 1.002
-        data['low'] = data['close'] * 0.998
-        
-        features = create_features(data, mock_config['periods'], mock_config['periods_meta'])
-        
-        labeled = get_labels_one_direction(
-            features,
-            markup=mock_config['markup'],
-            min_bars=mock_config['trading']['labeling']['min_bars'],
-            max_bars=mock_config['trading']['labeling']['max_bars'],
-            direction=mock_config['trading']['direction']
-        )
-        
-        assert 'labels' in labeled.columns
-        assert set(labeled['labels'].unique()).issubset({0.0, 0.2, 1.0})
-        
-        timeout_count = (labeled['labels'] == 0.2).sum()
-        assert timeout_count > 0, "Should have timeout labels (0.2)"
+            from src.data.loader import load_price_data
+            from src.features.engineering import create_features
+            from src.labeling.strategies import get_labels_one_direction
+            from src.risk.atr_manager import calculate_atr
+            
+            data = load_price_data(mock_config)
+            
+            data['high'] = data['close'] * 1.002
+            data['low'] = data['close'] * 0.998
+            
+            features = create_features(data, mock_config['periods'], mock_config['periods_meta'])
+            
+            features['high'] = data['high'].reindex(features.index, method='ffill')
+            features['low'] = data['low'].reindex(features.index, method='ffill')
+            
+            features['atr'] = calculate_atr(features, period=14)
+            
+            labeled = get_labels_one_direction(
+                features,
+                markup=mock_config['markup'],
+                min_bars=mock_config['trading']['labeling']['min_bars'],
+                max_bars=mock_config['trading']['labeling']['max_bars'],
+                direction=mock_config['trading']['direction']
+            )
+            
+            assert 'labels' in labeled.columns
+            assert set(labeled['labels'].unique()).issubset({0.0, 0.2, 1.0})
+            
+            timeout_count = (labeled['labels'] == 0.2).sum()
+            assert timeout_count > 0, "Should have timeout labels (0.2)"
+            
+            sl_hits = (labeled['labels'] == 0.0).sum()
+            tp_hits = (labeled['labels'] == 1.0).sum()
+            
+            assert sl_hits > 0, "Should have SL hits"
+            assert tp_hits > 0, "Should have TP hits"
 
 
 class TestTrainingPipeline:

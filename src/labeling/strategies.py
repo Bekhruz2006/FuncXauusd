@@ -102,7 +102,6 @@ def get_labels_one_direction(
         1    0.0  # 99 < 102 + 1.5
         2    1.0  # 103 > 101 + 1.5
     """
-    # Валидация
     if direction not in ['buy', 'sell']:
         raise ValueError(f"direction должен быть 'buy' или 'sell', получено: {direction}")
     
@@ -115,24 +114,32 @@ def get_labels_one_direction(
             f"(минимум {max_bars + 100})"
         )
     
-    # Расчет меток
     close_data = dataset['close'].values
+    
+    if 'atr' in dataset.columns:
+        atr_data = dataset['atr'].values
+    else:
+        from src.risk.atr_manager import calculate_atr
+        if all(col in dataset.columns for col in ['high', 'low']):
+            atr_series = calculate_atr(dataset, period=14)
+            atr_data = atr_series.values
+        else:
+            atr_data = np.ones(len(dataset)) * (close_data.std() * 0.02)
+    
     labels = calculate_labels_one_direction(
         close_data,
         markup,
         min_bars,
         max_bars,
-        direction
+        direction,
+        atr_data
     )
     
-    # Усечение датасета до длины меток
     result = dataset.iloc[:len(labels)].copy()
     result['labels'] = labels
     
-    # Удаление NaN (если были)
     result = result.dropna()
     
-    # Статистика
     total = len(result)
     positive = (result['labels'] == 1.0).sum()
     balance = positive / total if total > 0 else 0
