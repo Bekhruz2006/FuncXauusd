@@ -1,417 +1,370 @@
 """
-Model validation utilities
-Ensures model quality before deployment
+Валидация моделей и данных
+
+Критические проверки перед обучением:
+    - Баланс классов
+    - Размер выборки
+    - Качество кластеризации
+    - Валидность признаков
 """
 
 import numpy as np
 import pandas as pd
-from typing import Tuple, Optional, Dict
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score, f1_score,
-    confusion_matrix, classification_report
-)
+from typing import Tuple, Optional
+from sklearn.metrics import silhouette_score
 
 
-def validate_class_balance(
-    labels: pd.Series,
-    min_ratio: float = 0.2,
-    min_samples_per_class: int = 100
-) -> Tuple[bool, dict]:
+def validate_class_balance(labels: pd.Series,
+                          min_balance: float = 0.2) -> Tuple[bool, float, str]:
     """
-    Validate that dataset has adequate class balance
+    Проверка баланса классов
     
     Args:
-        labels: Target labels
-        min_ratio: Minimum ratio for minority class
-        min_samples_per_class: Minimum samples per class
-        
+        labels: Серия с метками [0, 1]
+        min_balance: Минимальный допустимый баланс
+    
     Returns:
-        Tuple of (is_valid, statistics)
+        (valid, balance, message):
+            valid: True если баланс OK
+            balance: Фактический баланс минорного класса
+            message: Описание
+    
+    Example:
+        >>> labels = pd.Series([1, 1, 0, 1, 0, 1])
+        >>> valid, balance, msg = validate_class_balance(labels, 0.2)
+        >>> print(f"Valid: {valid}, Balance: {balance:.2f}")
+        Valid: True, Balance: 0.33
     """
-    value_counts = labels.value_counts()
-    total = len(labels)
+    if len(labels) == 0:
+        return False, 0.0, "Пустая выборка"
     
-    stats = {
-        'total_samples': total,
-        'class_counts': value_counts.to_dict(),
-        'class_ratios': (value_counts / total).to_dict(),
-        'minority_ratio': value_counts.min() / total,
-        'min_samples': value_counts.min()
-    }
+    # Подсчет классов
+    unique_labels = labels.unique()
     
-    is_valid = (
-        stats['minority_ratio'] >= min_ratio and
-        stats['min_samples'] >= min_samples_per_class
-    )
+    if len(unique_labels) < 2:
+        return False, 0.0, f"Только один класс: {unique_labels[0]}"
     
-    return is_valid, stats
+    # Баланс = доля минорного класса
+    counts = labels.value_counts()
+    minority_class_count = counts.min()
+    balance = minority_class_count / len(labels)
+    
+    if balance < min_balance:
+        return False, balance, (
+            f"Дисбаланс классов: {balance:.3f} < {min_balance} "
+            f"(классов: {counts.to_dict()})"
+        )
+    
+    return True, balance, f"OK (баланс: {balance:.3f})"
 
 
-def validate_sample_size(
-    data: pd.DataFrame,
-    min_samples: int = 1000,
-    recommended_samples: int = 5000
-) -> Tuple[bool, dict]:
+def validate_sample_size(data: pd.DataFrame,
+                        min_samples: int = 100) -> Tuple[bool, str]:
     """
-    Validate dataset size
+    Проверка достаточности размера выборки
     
     Args:
-        data: Dataset to validate
-        min_samples: Minimum acceptable samples
-        recommended_samples: Recommended sample count
-        
+        data: DataFrame с данными
+        min_samples: Минимальное количество примеров
+    
     Returns:
-        Tuple of (meets_minimum, statistics)
+        (valid, message)
     """
     n_samples = len(data)
     
-    stats = {
-        'total_samples': n_samples,
-        'meets_minimum': n_samples >= min_samples,
-        'meets_recommended': n_samples >= recommended_samples,
-        'ratio_to_minimum': n_samples / min_samples if min_samples > 0 else 0
-    }
+    if n_samples < min_samples:
+        return False, (
+            f"Недостаточно данных: {n_samples} < {min_samples}"
+        )
     
-    return stats['meets_minimum'], stats
+    return True, f"OK ({n_samples} примеров)"
 
 
-def validate_feature_quality(
-    features: pd.DataFrame,
-    max_missing_ratio: float = 0.1,
-    max_constant_features: int = 0
-) -> Tuple[bool, dict]:
+def validate_features(features: pd.DataFrame) -> Tuple[bool, str]:
     """
-    Validate feature quality
+    Валидация признаков
+    
+    Проверки:
+        - Отсутствие NaN
+        - Отсутствие inf
+        - Отсутствие константных признаков
+        - Достаточная вариативность
     
     Args:
-        features: Feature DataFrame
-        max_missing_ratio: Maximum allowed missing value ratio
-        max_constant_features: Maximum allowed constant features
-        
+        features: DataFrame с признаками
+    
     Returns:
-        Tuple of (is_valid, statistics)
+        (valid, message)
     """
-    n_samples, n_features = features.shape
+    # NaN проверка
+    if features.isna().any().any():
+        nan_cols = features.columns[features.isna().any()].tolist()
+        return False, f"NaN в признаках: {nan_cols}"
     
-    # Missing values
-    missing_counts = features.isnull().sum()
-    missing_ratios = missing_counts / n_samples
-    max_missing = missing_ratios.max()
+    # Inf проверка
+    numeric_cols = features.select_dtypes(include=[np.number])
+    if np.isinf(numeric_cols).any().any():
+        inf_cols = numeric_cols.columns[np.isinf(numeric_cols).any()].tolist()
+        return False, f"Inf в признаках: {inf_cols}"
     
-    # Constant features
-    constant_mask = features.std() == 0
-    n_constant = constant_mask.sum()
+    # Константные признаки
+    constant_cols = [
+        col for col in numeric_cols.columns
+        if numeric_cols[col].nunique() == 1
+    ]
     
-    # Infinite values
-    n_infinite = np.isinf(features.values).sum()
+    if constant_cols:
+        return False, f"Константные признаки: {constant_cols}"
     
-    stats = {
-        'n_features': n_features,
-        'n_samples': n_samples,
-        'max_missing_ratio': max_missing,
-        'features_with_missing': (missing_ratios > 0).sum(),
-        'constant_features': n_constant,
-        'infinite_values': n_infinite,
-        'problematic_features': []
-    }
+    # Низкая вариативность (std < 0.01)
+    low_variance_cols = [
+        col for col in numeric_cols.columns
+        if numeric_cols[col].std() < 0.01
+    ]
     
-    # Identify problematic features
-    for col in features.columns:
-        if missing_ratios[col] > max_missing_ratio:
-            stats['problematic_features'].append(
-                f"{col}: {missing_ratios[col]:.1%} missing"
+    if low_variance_cols:
+        return False, f"Низкая вариативность: {low_variance_cols}"
+    
+    return True, f"OK ({len(features.columns)} признаков)"
+
+
+def validate_cluster_quality(features: np.ndarray,
+                            cluster_labels: np.ndarray,
+                            min_score: float = 0.3) -> Tuple[bool, float, str]:
+    """
+    Оценка качества кластеризации
+    
+    Использует Silhouette Score:
+        - Score ≈ 1: Отличная кластеризация
+        - Score ≈ 0.5: Приемлемая кластеризация
+        - Score ≈ 0: Случайная кластеризация
+        - Score < 0: Плохая кластеризация
+    
+    Args:
+        features: Признаки для кластеризации
+        cluster_labels: Метки кластеров
+        min_score: Минимальный допустимый score
+    
+    Returns:
+        (valid, score, message)
+    """
+    if len(np.unique(cluster_labels)) < 2:
+        return False, 0.0, "Менее 2 кластеров"
+    
+    try:
+        score = silhouette_score(features, cluster_labels)
+        
+        if score < min_score:
+            return False, score, (
+                f"Низкое качество кластеризации: {score:.3f} < {min_score}"
             )
-        if constant_mask[col]:
-            stats['problematic_features'].append(f"{col}: constant")
-    
-    is_valid = (
-        max_missing <= max_missing_ratio and
-        n_constant <= max_constant_features and
-        n_infinite == 0
-    )
-    
-    return is_valid, stats
+        
+        return True, score, f"OK (Silhouette: {score:.3f})"
+        
+    except Exception as e:
+        return False, 0.0, f"Ошибка расчета: {e}"
 
 
-def calculate_classification_metrics(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    y_pred_proba: Optional[np.ndarray] = None
-) -> dict:
+def validate_cluster_sizes(cluster_labels: np.ndarray,
+                          min_cluster_size: int = 100) -> Tuple[bool, dict, str]:
     """
-    Calculate comprehensive classification metrics
+    Проверка размеров кластеров
     
     Args:
-        y_true: True labels
-        y_pred: Predicted labels
-        y_pred_proba: Predicted probabilities (optional)
-        
+        cluster_labels: Метки кластеров
+        min_cluster_size: Минимальный размер кластера
+    
     Returns:
-        Dictionary of metrics
+        (valid, sizes, message):
+            valid: True если все кластеры >= min_size
+            sizes: {cluster_id: size}
+            message: Описание
     """
+    unique_clusters = np.unique(cluster_labels)
+    sizes = {
+        int(cluster): int((cluster_labels == cluster).sum())
+        for cluster in unique_clusters
+    }
+    
+    small_clusters = {
+        k: v for k, v in sizes.items()
+        if v < min_cluster_size
+    }
+    
+    if small_clusters:
+        return False, sizes, (
+            f"Маленькие кластеры: {small_clusters} "
+            f"(минимум {min_cluster_size})"
+        )
+    
+    return True, sizes, f"OK (кластеров: {len(sizes)})"
+
+
+def validate_model(model,
+                  X_test: pd.DataFrame,
+                  y_test: pd.Series,
+                  min_accuracy: float = 0.6) -> Tuple[bool, float, str]:
+    """
+    Валидация обученной модели на тестовых данных
+    
+    Args:
+        model: Обученная модель с методом score()
+        X_test: Тестовые признаки
+        y_test: Тестовые метки
+        min_accuracy: Минимальная точность
+    
+    Returns:
+        (valid, accuracy, message)
+    """
+    try:
+        accuracy = model.score(X_test, y_test)
+        
+        if accuracy < min_accuracy:
+            return False, accuracy, (
+                f"Низкая точность: {accuracy:.3f} < {min_accuracy}"
+            )
+        
+        return True, accuracy, f"OK (accuracy: {accuracy:.3f})"
+        
+    except Exception as e:
+        return False, 0.0, f"Ошибка валидации: {e}"
+
+
+def validate_predictions(predictions: np.ndarray,
+                        y_true: np.ndarray) -> Tuple[bool, dict, str]:
+    """
+    Валидация предсказаний модели
+    
+    Проверки:
+        - Корректный формат
+        - Наличие обоих классов
+        - Согласованность размеров
+    
+    Args:
+        predictions: Предсказания модели
+        y_true: Истинные метки
+    
+    Returns:
+        (valid, metrics, message)
+    """
+    # Проверка размеров
+    if len(predictions) != len(y_true):
+        return False, {}, (
+            f"Несоответствие размеров: "
+            f"{len(predictions)} != {len(y_true)}"
+        )
+    
+    # Проверка формата
+    unique_preds = np.unique(predictions)
+    if len(unique_preds) > 2 or not all(p in [0, 1] for p in unique_preds):
+        return False, {}, f"Некорректные предсказания: {unique_preds}"
+    
+    # Базовые метрики
+    from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
+    
     metrics = {
-        'accuracy': accuracy_score(y_true, y_pred),
-        'precision': precision_score(y_true, y_pred, average='binary', zero_division=0),
-        'recall': recall_score(y_true, y_pred, average='binary', zero_division=0),
-        'f1': f1_score(y_true, y_pred, average='binary', zero_division=0)
+        'accuracy': accuracy_score(y_true, predictions),
+        'f1_score': f1_score(y_true, predictions),
+        'confusion_matrix': confusion_matrix(y_true, predictions).tolist()
     }
     
-    # Confusion matrix
-    cm = confusion_matrix(y_true, y_pred)
-    if cm.shape == (2, 2):
-        tn, fp, fn, tp = cm.ravel()
-        metrics['true_negatives'] = int(tn)
-        metrics['false_positives'] = int(fp)
-        metrics['false_negatives'] = int(fn)
-        metrics['true_positives'] = int(tp)
-        
-        # Specificity
-        if (tn + fp) > 0:
-            metrics['specificity'] = tn / (tn + fp)
-    
-    # ROC AUC (if probabilities provided)
-    if y_pred_proba is not None:
-        try:
-            from sklearn.metrics import roc_auc_score
-            metrics['roc_auc'] = roc_auc_score(y_true, y_pred_proba)
-        except Exception:
-            pass
-    
-    return metrics
+    return True, metrics, f"OK (acc: {metrics['accuracy']:.3f})"
 
 
-def validate_model_performance(
-    metrics: dict,
-    min_accuracy: float = 0.70,
-    min_f1: float = 0.65
-) -> Tuple[bool, dict]:
+# === КОМПЛЕКСНАЯ ВАЛИДАЦИЯ ===
+
+def validate_training_data(data: pd.DataFrame,
+                          config: dict) -> Tuple[bool, list]:
     """
-    Validate that model meets performance thresholds
+    Комплексная валидация данных перед обучением
+    
+    Проверяет все критические аспекты:
+        - Размер выборки
+        - Баланс классов
+        - Качество признаков
+        - Наличие требуемых колонок
     
     Args:
-        metrics: Dictionary of model metrics
-        min_accuracy: Minimum acceptable accuracy
-        min_f1: Minimum acceptable F1 score
-        
+        data: Данные для обучения
+        config: Конфигурация с минимальными требованиями
+    
     Returns:
-        Tuple of (meets_threshold, validation_results)
+        (valid, errors): (True если все OK, список ошибок)
     """
-    results = {
-        'accuracy_valid': metrics.get('accuracy', 0) >= min_accuracy,
-        'f1_valid': metrics.get('f1', 0) >= min_f1,
-        'accuracy': metrics.get('accuracy', 0),
-        'f1': metrics.get('f1', 0),
-        'thresholds': {
-            'min_accuracy': min_accuracy,
-            'min_f1': min_f1
-        }
-    }
+    errors = []
     
-    meets_threshold = results['accuracy_valid'] and results['f1_valid']
+    # Проверка колонок
+    required_cols = ['close', 'labels']
+    missing_cols = [col for col in required_cols if col not in data.columns]
+    if missing_cols:
+        errors.append(f"Отсутствуют колонки: {missing_cols}")
+        return False, errors
     
-    return meets_threshold, results
+    # Размер выборки
+    min_samples = config.get('validation', {}).get('min_samples_per_class', 100)
+    valid, msg = validate_sample_size(data, min_samples)
+    if not valid:
+        errors.append(f"Размер выборки: {msg}")
+    
+    # Баланс классов
+    min_balance = config.get('validation', {}).get('min_class_balance', 0.2)
+    valid, balance, msg = validate_class_balance(data['labels'], min_balance)
+    if not valid:
+        errors.append(f"Баланс классов: {msg}")
+    
+    # Признаки (если есть)
+    feat_cols = [col for col in data.columns 
+                 if col.startswith('feat_') or col.startswith('meta_')]
+    if feat_cols:
+        valid, msg = validate_features(data[feat_cols])
+        if not valid:
+            errors.append(f"Признаки: {msg}")
+    
+    return len(errors) == 0, errors
 
 
-def check_overfitting(
-    train_metrics: dict,
-    val_metrics: dict,
-    max_gap: float = 0.10
-) -> Tuple[bool, dict]:
+def print_validation_report(data: pd.DataFrame,
+                           cluster_labels: Optional[np.ndarray] = None,
+                           config: Optional[dict] = None) -> None:
     """
-    Check for overfitting by comparing train and validation metrics
+    Вывод детального отчета валидации
     
     Args:
-        train_metrics: Metrics on training set
-        val_metrics: Metrics on validation set
-        max_gap: Maximum allowed gap between train and val
-        
-    Returns:
-        Tuple of (no_overfitting, analysis)
-    """
-    analysis = {
-        'accuracy_gap': train_metrics.get('accuracy', 0) - val_metrics.get('accuracy', 0),
-        'f1_gap': train_metrics.get('f1', 0) - val_metrics.get('f1', 0),
-        'train_accuracy': train_metrics.get('accuracy', 0),
-        'val_accuracy': val_metrics.get('accuracy', 0),
-        'max_allowed_gap': max_gap
-    }
-    
-    # No overfitting if gap is within acceptable range
-    no_overfitting = (
-        analysis['accuracy_gap'] <= max_gap and
-        analysis['f1_gap'] <= max_gap
-    )
-    
-    analysis['verdict'] = 'OK' if no_overfitting else 'OVERFITTING DETECTED'
-    
-    return no_overfitting, analysis
-
-
-def print_validation_report(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    dataset_name: str = 'Validation'
-) -> None:
-    """
-    Print detailed validation report
-    
-    Args:
-        y_true: True labels
-        y_pred: Predicted labels
-        dataset_name: Name of dataset (for display)
+        data: Данные для проверки
+        cluster_labels: Метки кластеров (опционально)
+        config: Конфигурация (опционально)
     """
     print(f"\n{'='*60}")
-    print(f"  {dataset_name} Set Performance")
+    print(f"  VALIDATION REPORT")
     print(f"{'='*60}")
     
-    metrics = calculate_classification_metrics(y_true, y_pred)
+    # Размер данных
+    print(f"\nРазмер данных:")
+    print(f"  • Строк: {len(data)}")
+    print(f"  • Колонок: {len(data.columns)}")
     
-    print(f"\n📊 Metrics:")
-    print(f"   Accuracy:  {metrics['accuracy']:.4f}")
-    print(f"   Precision: {metrics['precision']:.4f}")
-    print(f"   Recall:    {metrics['recall']:.4f}")
-    print(f"   F1 Score:  {metrics['f1']:.4f}")
+    # Баланс классов
+    if 'labels' in data.columns:
+        valid, balance, msg = validate_class_balance(data['labels'])
+        status = "✓" if valid else "✗"
+        print(f"\nБаланс классов: {status}")
+        print(f"  {msg}")
     
-    if 'specificity' in metrics:
-        print(f"   Specificity: {metrics['specificity']:.4f}")
+    # Признаки
+    feat_cols = [col for col in data.columns 
+                 if col.startswith('feat_') or col.startswith('meta_')]
+    if feat_cols:
+        valid, msg = validate_features(data[feat_cols])
+        status = "✓" if valid else "✗"
+        print(f"\nПризнаки: {status}")
+        print(f"  {msg}")
     
-    if 'roc_auc' in metrics:
-        print(f"   ROC AUC:   {metrics['roc_auc']:.4f}")
+    # Кластеры
+    if cluster_labels is not None:
+        valid, sizes, msg = validate_cluster_sizes(cluster_labels)
+        status = "✓" if valid else "✗"
+        print(f"\nКластеры: {status}")
+        print(f"  {msg}")
+        print(f"  Размеры: {sizes}")
     
-    # Confusion Matrix
-    cm = confusion_matrix(y_true, y_pred)
-    print(f"\n🔢 Confusion Matrix:")
-    print(f"   True Neg:  {metrics.get('true_negatives', 'N/A')}")
-    print(f"   False Pos: {metrics.get('false_positives', 'N/A')}")
-    print(f"   False Neg: {metrics.get('false_negatives', 'N/A')}")
-    print(f"   True Pos:  {metrics.get('true_positives', 'N/A')}")
-    
-    # Classification Report
-    print(f"\n📋 Classification Report:")
-    print(classification_report(y_true, y_pred, digits=4))
-
-
-def validate_prediction_distribution(
-    predictions: np.ndarray,
-    min_predictions: int = 10
-) -> Tuple[bool, dict]:
-    """
-    Validate that model makes reasonable number of predictions
-    
-    Args:
-        predictions: Array of binary predictions
-        min_predictions: Minimum number of positive predictions
-        
-    Returns:
-        Tuple of (is_valid, statistics)
-    """
-    n_total = len(predictions)
-    n_positive = np.sum(predictions == 1)
-    n_negative = np.sum(predictions == 0)
-    
-    stats = {
-        'total_predictions': n_total,
-        'positive_predictions': n_positive,
-        'negative_predictions': n_negative,
-        'positive_ratio': n_positive / n_total if n_total > 0 else 0
-    }
-    
-    is_valid = (
-        n_positive >= min_predictions and
-        0.05 <= stats['positive_ratio'] <= 0.95  # Not too extreme
-    )
-    
-    return is_valid, stats
-
-
-def comprehensive_model_validation(
-    model,
-    X_train: pd.DataFrame,
-    y_train: pd.Series,
-    X_val: pd.DataFrame,
-    y_val: pd.Series,
-    config: dict
-) -> Tuple[bool, dict]:
-    """
-    Comprehensive validation pipeline
-    
-    Args:
-        model: Trained model
-        X_train: Training features
-        y_train: Training labels
-        X_val: Validation features
-        y_val: Validation labels
-        config: Configuration dictionary
-        
-    Returns:
-        Tuple of (passes_validation, detailed_report)
-    """
-    report = {
-        'timestamp': pd.Timestamp.now(),
-        'checks': {},
-        'metrics': {},
-        'warnings': [],
-        'errors': []
-    }
-    
-    # 1. Class balance check
-    balance_valid, balance_stats = validate_class_balance(
-        y_train,
-        min_ratio=config.get('validation', {}).get('criteria', {}).get('min_class_balance', 0.2)
-    )
-    report['checks']['class_balance'] = balance_valid
-    report['metrics']['class_balance'] = balance_stats
-    
-    if not balance_valid:
-        report['warnings'].append(f"Class imbalance: {balance_stats['minority_ratio']:.2%}")
-    
-    # 2. Sample size check
-    size_valid, size_stats = validate_sample_size(
-        X_train,
-        min_samples=config.get('search', {}).get('space', {}).get('min_samples', [1000])[0]
-    )
-    report['checks']['sample_size'] = size_valid
-    report['metrics']['sample_size'] = size_stats
-    
-    # 3. Feature quality check
-    feature_valid, feature_stats = validate_feature_quality(X_train)
-    report['checks']['feature_quality'] = feature_valid
-    report['metrics']['feature_quality'] = feature_stats
-    
-    if not feature_valid:
-        report['errors'].extend(feature_stats['problematic_features'])
-    
-    # 4. Model performance check
-    y_train_pred = model.predict(X_train)
-    y_val_pred = model.predict(X_val)
-    
-    train_metrics = calculate_classification_metrics(y_train, y_train_pred)
-    val_metrics = calculate_classification_metrics(y_val, y_val_pred)
-    
-    report['metrics']['train'] = train_metrics
-    report['metrics']['validation'] = val_metrics
-    
-    perf_valid, perf_results = validate_model_performance(
-        val_metrics,
-        min_accuracy=config.get('search', {}).get('targets', {}).get('val_accuracy', 0.75)
-    )
-    report['checks']['performance'] = perf_valid
-    
-    # 5. Overfitting check
-    no_overfit, overfit_analysis = check_overfitting(train_metrics, val_metrics)
-    report['checks']['no_overfitting'] = no_overfit
-    report['metrics']['overfitting'] = overfit_analysis
-    
-    if not no_overfit:
-        report['warnings'].append(f"Overfitting detected: {overfit_analysis['accuracy_gap']:.2%} gap")
-    
-    # 6. Prediction distribution check
-    pred_valid, pred_stats = validate_prediction_distribution(y_val_pred)
-    report['checks']['prediction_distribution'] = pred_valid
-    report['metrics']['predictions'] = pred_stats
-    
-    # Overall validation
-    all_checks_passed = all(report['checks'].values())
-    report['overall_valid'] = all_checks_passed
-    
-    return all_checks_passed, report
+    print(f"{'='*60}\n")

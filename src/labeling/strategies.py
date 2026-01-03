@@ -1,347 +1,299 @@
 """
-Labeling strategies for supervised learning
-Implements one-direction labeling with temporal penalty
+Стратегии разметки данных для обучения
+
+Реализованы методы:
+    - get_labels_one_direction: Разметка для однонаправленной торговли
+    
+Принципы разметки:
+    - Label = 1: Ожидается движение в заданном направлении на markup пунктов
+    - Label = 0: Движение не достигнет markup в заданном окне (min_bars, max_bars)
+    - Используется случайный горизонт прогноза для робастности
 """
 
+import random
 import numpy as np
 import pandas as pd
 from numba import njit
-from typing import Tuple
+from typing import Literal
 
 
 @njit
 def calculate_labels_one_direction(
-    close: np.ndarray,
+    close_data: np.ndarray,
     markup: float,
-    direction: str,
-    min_bars: int = 1,
-    max_bars: int = 15
+    min_bars: int,
+    max_bars: int,
+    direction: str
 ) -> np.ndarray:
     """
-    Calculate labels for one-direction trading (buy or sell only)
-    with temporal penalty - profit must be taken quickly
+    Расчет меток для однонаправленной торговли (Numba-optimized)
+    
+    Логика:
+        - Для каждого бара берется случайное окно [min_bars, max_bars]
+        - Проверяется, достигнет ли цена markup в этом окне
+        - Label = 1 если достигнет, 0 если нет
     
     Args:
-        close: Close prices array
-        markup: Threshold for signal (e.g., 0.25 for 25%)
-        direction: 'buy' or 'sell'
-        min_bars: Minimum bars to look forward
-        max_bars: Maximum bars to look forward (timeout)
-        
+        close_data: Массив цен закрытия
+        markup: Порог движения цены (в пунктах инструмента)
+        min_bars: Минимальный горизонт прогноза
+        max_bars: Максимальный горизонт прогноза
+        direction: 'buy' или 'sell'
+    
     Returns:
-        Array of labels: 1 (signal), 0 (no signal), -1 (invalid/future)
-        
-    Logic:
-        - For BUY: Look for price increase > markup within max_bars
-        - For SELL: Look for price decrease > markup within max_bars
-        - Apply temporal penalty: earlier profit = stronger signal
-        - If profit not reached within max_bars, label = 0
+        np.ndarray: Массив меток [0, 1]
+    
+    Example:
+        >>> close = np.array([100, 101, 102, 99, 98])
+        >>> labels = calculate_labels_one_direction(close, 2.0, 1, 3, 'buy')
+        >>> # labels[0] = 1 если в следующих 1-3 барах цена >= 102
     """
-    n = len(close)
-    labels = np.full(n, -1, dtype=np.int8)
+    labels = np.empty(len(close_data) - max_bars, dtype=np.float64)
     
-    is_buy = direction.lower() == 'buy'
-    
-    # Can't label last max_bars (no future data)
-    for i in range(n - max_bars):
-        current_price = close[i]
-        future_window = close[i + min_bars:i + max_bars + 1]
+    for i in range(len(labels)):
+        # Случайный горизонт прогноза
+        rand = random.randint(min_bars, max_bars)
+        curr_pr = close_data[i]
+        future_pr = close_data[i + rand]
         
-        if is_buy:
-            # Buy: look for price going UP
-            max_future = np.max(future_window)
-            pct_change = (max_future - current_price) / current_price
-            
-            if pct_change >= markup:
-                # Find how quickly profit was reached
-                for j in range(len(future_window)):
-                    if (future_window[j] - current_price) / current_price >= markup:
-                        # Temporal bonus: earlier = better
-                        time_factor = 1.0 - (j / max_bars) * 0.3  # 30% penalty for late
-                        
-                        if time_factor > 0.7:  # Strong signal
-                            labels[i] = 1
-                        break
+        if direction == "sell":
+            # Для продажи: цена должна упасть на markup
+            if (future_pr + markup) < curr_pr:
+                labels[i] = 1.0
             else:
-                labels[i] = 0  # No profitable move
+                labels[i] = 0.0
+                
+        elif direction == "buy":
+            # Для покупки: цена должна вырасти на markup
+            if (future_pr - markup) > curr_pr:
+                labels[i] = 1.0
+            else:
+                labels[i] = 0.0
         else:
-            # Sell: look for price going DOWN
-            min_future = np.min(future_window)
-            pct_change = (current_price - min_future) / current_price
-            
-            if pct_change >= markup:
-                # Find how quickly profit was reached
-                for j in range(len(future_window)):
-                    if (current_price - future_window[j]) / current_price >= markup:
-                        time_factor = 1.0 - (j / max_bars) * 0.3
-                        
-                        if time_factor > 0.7:
-                            labels[i] = 1
-                        break
-            else:
-                labels[i] = 0
+            # Некорректное направление - все нули
+            labels[i] = 0.0
     
     return labels
 
 
 def get_labels_one_direction(
-    data: pd.DataFrame,
+    dataset: pd.DataFrame,
     markup: float,
-    direction: str = 'buy',
     min_bars: int = 1,
     max_bars: int = 15,
-    verbose: bool = False
-) -> pd.Series:
+    direction: Literal['buy', 'sell'] = 'buy'
+) -> pd.DataFrame:
     """
-    Wrapper for one-direction labeling with pandas integration
+    Создание меток для однонаправленной торговли
     
     Args:
-        data: OHLCV DataFrame
-        markup: Signal threshold (e.g., 0.25 for 25%)
-        direction: 'buy' or 'sell'
-        min_bars: Minimum bars to look forward
-        max_bars: Maximum bars to look forward
-        verbose: Print labeling statistics
-        
-    Returns:
-        Series of labels aligned with data index
-    """
-    close = data['close'].values
+        dataset: DataFrame с колонкой 'close'
+        markup: Порог движения для сигнала (например, 0.25 для XAUUSD)
+        min_bars: Минимальное окно в будущее
+        max_bars: Максимальное окно в будущее
+        direction: 'buy' (рост) или 'sell' (падение)
     
+    Returns:
+        pd.DataFrame: Исходные данные + колонка 'labels'
+    
+    Raises:
+        ValueError: Если direction не 'buy' или 'sell'
+        ValueError: Если 'close' отсутствует в dataset
+    
+    Example:
+        >>> df = pd.DataFrame({'close': [100, 102, 101, 99, 103]})
+        >>> labeled = get_labels_one_direction(df, markup=1.5, direction='buy')
+        >>> labeled['labels']
+        0    1.0  # 102 > 100 + 1.5
+        1    0.0  # 99 < 102 + 1.5
+        2    1.0  # 103 > 101 + 1.5
+    """
+    # Валидация
+    if direction not in ['buy', 'sell']:
+        raise ValueError(f"direction должен быть 'buy' или 'sell', получено: {direction}")
+    
+    if 'close' not in dataset.columns:
+        raise ValueError("В dataset отсутствует колонка 'close'")
+    
+    if len(dataset) < max_bars + 100:
+        raise ValueError(
+            f"Недостаточно данных: {len(dataset)} баров "
+            f"(минимум {max_bars + 100})"
+        )
+    
+    # Расчет меток
+    close_data = dataset['close'].values
     labels = calculate_labels_one_direction(
-        close,
+        close_data,
         markup,
-        direction,
         min_bars,
-        max_bars
+        max_bars,
+        direction
     )
     
-    labels_series = pd.Series(labels, index=data.index, name='label')
+    # Усечение датасета до длины меток
+    result = dataset.iloc[:len(labels)].copy()
+    result['labels'] = labels
     
-    # Filter out invalid labels (-1)
-    valid_mask = labels_series != -1
-    labels_series = labels_series[valid_mask]
+    # Удаление NaN (если были)
+    result = result.dropna()
     
-    if verbose:
-        print(f"\n📊 Labeling Statistics ({direction.upper()}):")
-        print(f"   Markup threshold: {markup:.2%}")
-        print(f"   Total samples: {len(labels_series):,}")
-        print(f"   Signals (1): {(labels_series == 1).sum():,} ({(labels_series == 1).mean():.2%})")
-        print(f"   No signals (0): {(labels_series == 0).sum():,} ({(labels_series == 0).mean():.2%})")
-        
-        balance = (labels_series == 1).mean()
-        if balance < 0.1 or balance > 0.9:
-            print(f"   ⚠️ Class imbalance detected! Consider adjusting markup.")
+    # Статистика
+    total = len(result)
+    positive = (result['labels'] == 1.0).sum()
+    balance = positive / total if total > 0 else 0
     
-    return labels_series
+    print(f"📊 Разметка ({direction}):")
+    print(f"  • Всего: {total} примеров")
+    print(f"  • Сигналов (1): {positive} ({balance:.1%})")
+    print(f"  • Ожиданий (0): {total - positive} ({1-balance:.1%})")
+    print(f"  • Баланс классов: {balance:.3f}")
+    
+    return result
 
 
-def validate_class_balance(
-    labels: pd.Series,
-    min_positive_ratio: float = 0.1,
-    max_positive_ratio: float = 0.9
-) -> Tuple[bool, float]:
-    """
-    Validate that classes are reasonably balanced
-    
-    Args:
-        labels: Series of binary labels
-        min_positive_ratio: Minimum acceptable positive class ratio
-        max_positive_ratio: Maximum acceptable positive class ratio
-        
-    Returns:
-        Tuple of (is_valid, positive_ratio)
-    """
-    positive_ratio = (labels == 1).mean()
-    is_valid = min_positive_ratio <= positive_ratio <= max_positive_ratio
-    
-    return is_valid, positive_ratio
+# === ДОПОЛНИТЕЛЬНЫЕ СТРАТЕГИИ РАЗМЕТКИ ===
 
-
-def create_multiclass_labels(
-    data: pd.DataFrame,
-    markup_strong: float = 0.30,
-    markup_weak: float = 0.15,
-    direction: str = 'buy',
+def get_labels_bidirectional(
+    dataset: pd.DataFrame,
+    markup: float,
+    min_bars: int = 1,
     max_bars: int = 15
-) -> pd.Series:
+) -> pd.DataFrame:
     """
-    Create multiclass labels: 0 (no signal), 1 (weak signal), 2 (strong signal)
+    Двунаправленная разметка (Buy/Sell/Hold)
     
     Args:
-        data: OHLCV DataFrame
-        markup_strong: Threshold for strong signal
-        markup_weak: Threshold for weak signal
-        direction: 'buy' or 'sell'
-        max_bars: Look forward window
-        
+        dataset: DataFrame с колонкой 'close'
+        markup: Порог движения
+        min_bars: Минимальное окно
+        max_bars: Максимальное окно
+    
     Returns:
-        Series of multiclass labels
+        pd.DataFrame: Данные с метками [0: Wait, 1: Buy, 2: Sell]
+    
+    Note:
+        В текущей архитектуре не используется (только one-direction),
+        но может быть полезно для будущих экспериментов
     """
-    close = data['close'].values
-    n = len(close)
-    labels = np.zeros(n, dtype=np.int8)
+    close_data = dataset['close'].values
+    labels = []
     
-    is_buy = direction.lower() == 'buy'
-    
-    for i in range(n - max_bars):
-        current = close[i]
-        future = close[i + 1:i + max_bars + 1]
+    for i in range(len(close_data) - max_bars):
+        rand = random.randint(min_bars, max_bars)
+        curr_pr = close_data[i]
+        future_pr = close_data[i + rand]
         
-        if is_buy:
-            max_profit = (np.max(future) - current) / current
-            
-            if max_profit >= markup_strong:
-                labels[i] = 2  # Strong signal
-            elif max_profit >= markup_weak:
-                labels[i] = 1  # Weak signal
+        if (future_pr - markup) > curr_pr:
+            labels.append(1.0)  # Buy
+        elif (future_pr + markup) < curr_pr:
+            labels.append(2.0)  # Sell
         else:
-            max_profit = (current - np.min(future)) / current
-            
-            if max_profit >= markup_strong:
-                labels[i] = 2
-            elif max_profit >= markup_weak:
-                labels[i] = 1
+            labels.append(0.0)  # Wait
     
-    # Remove future data
-    labels[-max_bars:] = -1
+    result = dataset.iloc[:len(labels)].copy()
+    result['labels'] = labels
     
-    labels_series = pd.Series(labels, index=data.index, name='label')
-    labels_series = labels_series[labels_series != -1]
-    
-    return labels_series
+    return result.dropna()
 
 
-@njit
-def calculate_regression_target(
-    close: np.ndarray,
-    high: np.ndarray,
-    low: np.ndarray,
-    atr: np.ndarray,
-    direction: str,
-    max_bars: int = 20
-) -> np.ndarray:
+def validate_labels(dataset: pd.DataFrame,
+                   min_balance: float = 0.2) -> tuple:
     """
-    Calculate continuous regression target with temporal penalty
-    
-    Target = (Max_Profit_Within_N_Bars) / ATR * time_factor
+    Валидация качества разметки
     
     Args:
-        close: Close prices
-        high: High prices
-        low: Low prices
-        atr: Average True Range
-        direction: 'buy' or 'sell'
-        max_bars: Maximum bars to look forward
-        
+        dataset: Размеченные данные с колонкой 'labels'
+        min_balance: Минимальный баланс классов
+    
     Returns:
-        Array of regression targets
+        (bool, str): (валидность, сообщение)
+    
+    Проверки:
+        - Наличие обоих классов
+        - Баланс классов >= min_balance
+        - Отсутствие NaN в метках
     """
-    n = len(close)
-    targets = np.full(n, np.nan)
+    if 'labels' not in dataset.columns:
+        return False, "Отсутствует колонка 'labels'"
     
-    is_buy = direction.lower() == 'buy'
+    labels = dataset['labels']
     
-    for i in range(n - max_bars):
-        current = close[i]
-        current_atr = atr[i]
-        
-        if np.isnan(current_atr) or current_atr == 0:
-            targets[i] = 0.0
-            continue
-        
-        # Look at future bars
-        future_highs = high[i + 1:i + max_bars + 1]
-        future_lows = low[i + 1:i + max_bars + 1]
-        
-        if is_buy:
-            max_profit = np.max(future_highs) - current
-            
-            # Find when profit was reached
-            bars_to_profit = 0
-            for j in range(len(future_highs)):
-                if future_highs[j] >= (current + 1.5 * current_atr):
-                    bars_to_profit = j + 1
-                    break
-            
-            if bars_to_profit > 0:
-                time_factor = 1.0 - (bars_to_profit / max_bars) * 0.5
-                targets[i] = (max_profit / current_atr) * time_factor
-            else:
-                targets[i] = max_profit / current_atr * 0.3  # Penalty
+    # Проверка на NaN
+    if labels.isna().any():
+        return False, f"NaN в метках: {labels.isna().sum()} шт."
+    
+    # Подсчет классов
+    unique_labels = labels.unique()
+    if len(unique_labels) < 2:
+        return False, f"Только один класс: {unique_labels}"
+    
+    # Баланс классов
+    total = len(labels)
+    positive = (labels == 1.0).sum()
+    balance = positive / total
+    
+    if balance < min_balance or balance > (1 - min_balance):
+        return False, f"Дисбаланс классов: {balance:.3f} (мин {min_balance})"
+    
+    return True, f"OK (баланс: {balance:.3f})"
+
+
+def print_label_distribution(dataset: pd.DataFrame) -> None:
+    """
+    Вывод распределения меток
+    
+    Полезно для анализа качества разметки
+    """
+    if 'labels' not in dataset.columns:
+        print("⚠️ Колонка 'labels' не найдена")
+        return
+    
+    labels = dataset['labels']
+    counts = labels.value_counts().sort_index()
+    total = len(labels)
+    
+    print(f"\n📊 Распределение меток:")
+    for label, count in counts.items():
+        pct = count / total * 100
+        bar = '█' * int(pct / 2)
+        print(f"  {int(label)}: {count:6d} ({pct:5.1f}%) {bar}")
+
+
+def analyze_label_sequences(dataset: pd.DataFrame) -> dict:
+    """
+    Анализ последовательностей меток
+    
+    Проверяет:
+        - Средняя длина последовательностей одинаковых меток
+        - Максимальная длина последовательности
+        - Количество переключений
+    
+    Returns:
+        dict: Статистика последовательностей
+    """
+    labels = dataset['labels'].values
+    
+    # Поиск переключений
+    switches = np.diff(labels) != 0
+    n_switches = switches.sum()
+    
+    # Длины последовательностей
+    sequence_lengths = []
+    current_length = 1
+    
+    for i in range(1, len(labels)):
+        if labels[i] == labels[i-1]:
+            current_length += 1
         else:
-            max_profit = current - np.min(future_lows)
-            
-            bars_to_profit = 0
-            for j in range(len(future_lows)):
-                if future_lows[j] <= (current - 1.5 * current_atr):
-                    bars_to_profit = j + 1
-                    break
-            
-            if bars_to_profit > 0:
-                time_factor = 1.0 - (bars_to_profit / max_bars) * 0.5
-                targets[i] = (max_profit / current_atr) * time_factor
-            else:
-                targets[i] = max_profit / current_atr * 0.3
+            sequence_lengths.append(current_length)
+            current_length = 1
+    sequence_lengths.append(current_length)
     
-    return targets
-
-
-def get_regression_targets(
-    data: pd.DataFrame,
-    direction: str = 'buy',
-    max_bars: int = 20,
-    atr_period: int = 14
-) -> pd.Series:
-    """
-    Create regression targets for continuous prediction
-    
-    Args:
-        data: OHLCV DataFrame
-        direction: 'buy' or 'sell'
-        max_bars: Look forward window
-        atr_period: Period for ATR calculation
-        
-    Returns:
-        Series of regression targets
-    """
-    # Calculate ATR
-    high = data['high'].values
-    low = data['low'].values
-    close = data['close'].values
-    
-    tr = np.maximum(high - low,
-                    np.maximum(np.abs(high - np.roll(close, 1)),
-                             np.abs(low - np.roll(close, 1))))
-    
-    atr = np.convolve(tr, np.ones(atr_period) / atr_period, mode='same')
-    
-    # Calculate targets
-    targets = calculate_regression_target(
-        close, high, low, atr, direction, max_bars
-    )
-    
-    targets_series = pd.Series(targets, index=data.index, name='target')
-    targets_series = targets_series.dropna()
-    
-    return targets_series
-
-
-def get_label_distribution(labels: pd.Series) -> dict:
-    """
-    Analyze label distribution
-    
-    Args:
-        labels: Series of labels
-        
-    Returns:
-        Dictionary with distribution statistics
-    """
-    dist = {
-        'total': len(labels),
-        'unique_values': labels.unique().tolist(),
-        'value_counts': labels.value_counts().to_dict(),
-        'proportions': (labels.value_counts() / len(labels)).to_dict()
+    return {
+        'total_labels': len(labels),
+        'n_switches': n_switches,
+        'avg_sequence_length': np.mean(sequence_lengths),
+        'max_sequence_length': np.max(sequence_lengths),
+        'min_sequence_length': np.min(sequence_lengths)
     }
-    
-    return dist

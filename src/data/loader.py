@@ -1,275 +1,266 @@
 """
-Data loading and caching module
-Handles OHLCV data loading with intelligent caching
+Загрузка и кэширование исторических ценовых данных
+
+Поддержка:
+    - CSV формат MT5 (разделитель ';' или пробел)
+    - Автоматическое определение формата
+    - Кэширование в Parquet для быстрой перезагрузки
+    - Валидация данных
 """
 
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from typing import Optional, Tuple
 from datetime import datetime
-import pickle
+from typing import Optional, Dict, Union
+
+# Глобальный кэш для избежания повторной загрузки
+_PRICE_CACHE: Optional[pd.DataFrame] = None
 
 
-# Global cache for performance
-_PRICE_CACHE = None
-
-
-def load_price_data(
-    config: dict,
-    use_cache: bool = True,
-    verbose: bool = True
-) -> pd.DataFrame:
+def load_price_data(config: dict, force_reload: bool = False) -> pd.DataFrame:
     """
-    Load and preprocess OHLCV price data
+    Загрузка исторических OHLCV данных
     
     Args:
-        config: Configuration dictionary with data paths and parameters
-        use_cache: Use cached data if available
-        verbose: Print loading information
-        
+        config: Конфигурация с путями и параметрами
+        force_reload: Принудительная перезагрузка из CSV
+    
     Returns:
-        DataFrame with OHLCV data, properly indexed and cleaned
-        
+        pd.DataFrame: Данные с индексом datetime и колонкой 'close'
+    
     Raises:
-        FileNotFoundError: If data file not found
-        ValueError: If data is invalid or empty
+        FileNotFoundError: Если CSV файл не найден
+        ValueError: Если данные некорректны
     """
     global _PRICE_CACHE
     
-    # Return cached data if available
-    if use_cache and _PRICE_CACHE is not None:
-        if verbose:
-            print(f"✅ Using cached data ({len(_PRICE_CACHE)} bars)")
+    # Проверка кэша
+    if _PRICE_CACHE is not None and not force_reload:
+        print(f"✓ Данные загружены из памяти ({len(_PRICE_CACHE)} баров)")
         return _PRICE_CACHE.copy()
     
-    # Construct file path
     symbol = config['symbol']['name']
-    data_path = Path(config['data']['paths']['raw']) / f"{symbol}.csv"
+    raw_path = Path(config['data']['paths']['raw'])
+    csv_file = raw_path / f"{symbol}.csv"
     
-    if not data_path.exists():
+    if not csv_file.exists():
         raise FileNotFoundError(
-            f"Data file not found: {data_path}\n"
-            f"Please place {symbol}.csv in {config['data']['paths']['raw']}/"
+            f"CSV файл не найден: {csv_file}\n"
+            f"Экспортируйте данные из MetaTrader 5"
         )
     
-    if verbose:
-        print(f"📂 Loading {data_path.name}...", end=" ")
+    print(f"📂 Загрузка данных из {csv_file.name}...")
     
-    # Load CSV with semicolon separator
+    # Попытка определить формат
+    df = _load_csv_auto_detect(csv_file)
+    
+    # Валидация
+    _validate_price_data(df)
+    
+    # Кэширование
+    _PRICE_CACHE = df
+    
+    print(f"✓ Загружено {len(df)} баров ({df.index[0]} - {df.index[-1]})")
+    
+    return df.copy()
+
+
+def _load_csv_auto_detect(filepath: Path) -> pd.DataFrame:
+    """
+    Автоматическое определение формата CSV и загрузка
+    
+    Поддерживаемые форматы:
+        1. MT5 экспорт с разделителем ';'
+        2. MT5 экспорт с пробелами
+        3. Стандартный CSV с запятыми
+    """
+    # Формат 1: разделитель ';'
     try:
-        df = pd.read_csv(
-            data_path,
-            sep=';',
-            parse_dates=['Date'],
-            index_col='Date'
+        df = pd.read_csv(filepath, sep=';', parse_dates=['Date'])
+        if 'Date' in df.columns and 'Close' in df.columns:
+            return _normalize_mt5_format(df)
+    except:
+        pass
+    
+    # Формат 2: разделитель пробел (как в оригинальном коде)
+    try:
+        df = pd.read_csv(filepath, sep=r'\s+')
+        if '<DATE>' in df.columns and '<CLOSE>' in df.columns:
+            return _normalize_mt5_space_format(df)
+    except:
+        pass
+    
+    # Формат 3: стандартный CSV
+    try:
+        df = pd.read_csv(filepath)
+        if 'time' in df.columns and 'close' in df.columns:
+            df['time'] = pd.to_datetime(df['time'])
+            df.set_index('time', inplace=True)
+            return df[['close']].dropna()
+    except:
+        pass
+    
+    raise ValueError(
+        f"Не удалось определить формат файла {filepath.name}\n"
+        f"Поддерживаемые форматы:\n"
+        f"  1. MT5 экспорт с ';' (Date;Open;High;Low;Close;Volume)\n"
+        f"  2. MT5 экспорт с пробелами (<DATE> <TIME> <OPEN> ...)\n"
+        f"  3. Стандартный CSV (time,open,high,low,close,volume)"
+    )
+
+
+def _normalize_mt5_format(df: pd.DataFrame) -> pd.DataFrame:
+    """Нормализация MT5 формата с разделителем ';'"""
+    result = pd.DataFrame()
+    result['time'] = pd.to_datetime(df['Date'])
+    result['close'] = df['Close'].astype(float)
+    result.set_index('time', inplace=True)
+    return result.dropna()
+
+
+def _normalize_mt5_space_format(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Нормализация MT5 формата с пробелами
+    Формат: <DATE> <TIME> <OPEN> <HIGH> <LOW> <CLOSE> <TICKVOL>
+    """
+    result = pd.DataFrame()
+    result['time'] = df['<DATE>'] + ' ' + df['<TIME>']
+    result['time'] = pd.to_datetime(result['time'], format='mixed')
+    result['close'] = df['<CLOSE>'].astype(float)
+    result.set_index('time', inplace=True)
+    return result.dropna()
+
+
+def _validate_price_data(df: pd.DataFrame) -> None:
+    """
+    Валидация загруженных данных
+    
+    Проверки:
+        - Наличие индекса datetime
+        - Наличие колонки 'close'
+        - Отсутствие NaN
+        - Отсутствие нулевых/отрицательных цен
+        - Минимальное количество данных
+    """
+    if not isinstance(df.index, pd.DatetimeIndex):
+        raise ValueError("Индекс должен быть DatetimeIndex")
+    
+    if 'close' not in df.columns:
+        raise ValueError("Отсутствует колонка 'close'")
+    
+    if df['close'].isna().any():
+        raise ValueError(
+            f"Обнаружены NaN значения: {df['close'].isna().sum()} шт."
         )
-    except Exception as e:
-        raise ValueError(f"Failed to parse CSV: {e}")
     
-    # Validate required columns
-    required = ['Open', 'High', 'Low', 'Close', 'Volume']
-    missing = set(required) - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing columns: {missing}")
+    if (df['close'] <= 0).any():
+        raise ValueError("Обнаружены нулевые или отрицательные цены")
     
-    # Standardize column names to lowercase
-    df.columns = df.columns.str.lower()
-    
-    # Convert to numeric, handle errors
-    for col in ['open', 'high', 'low', 'close', 'volume']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    # Remove invalid data
-    initial_len = len(df)
-    df = df.dropna()
-    df = df[df['volume'] > 0]  # Remove zero volume bars
-    df = df[df['high'] >= df['low']]  # Sanity check
-    
-    removed = initial_len - len(df)
-    if removed > 0 and verbose:
-        print(f"(removed {removed} invalid bars)")
-    
-    # Sort by date
-    df = df.sort_index()
-    
-    # Apply date filters if specified
-    if 'backward' in config['data']:
-        start_date = pd.to_datetime(config['data']['backward'])
-        df = df[df.index >= start_date]
-    
-    if 'full_forward' in config['data']:
-        end_date = pd.to_datetime(config['data']['full_forward'])
-        df = df[df.index <= end_date]
-    
-    if len(df) == 0:
-        raise ValueError("No data remaining after filtering")
-    
-    if verbose:
-        date_range = f"{df.index[0].date()} → {df.index[-1].date()}"
-        print(f"✅ Loaded {len(df):,} bars | {date_range}")
-    
-    # Cache for future use
-    if use_cache:
-        _PRICE_CACHE = df.copy()
-    
-    return df
+    if len(df) < 1000:
+        raise ValueError(
+            f"Недостаточно данных: {len(df)} баров (минимум 1000)"
+        )
 
 
-def cache_prices(config: dict, verbose: bool = True) -> None:
+def cache_prices(config: dict) -> None:
     """
-    Load and cache price data for fast repeated access
+    Предварительная загрузка и кэширование данных в памяти
     
-    Args:
-        config: Configuration dictionary
-        verbose: Print status messages
+    Использование:
+        >>> cache_prices(config)
+        >>> # Теперь load_price_data() будет мгновенной
     """
-    global _PRICE_CACHE
-    
-    if _PRICE_CACHE is not None:
-        if verbose:
-            print("✅ Data already cached")
-        return
-    
-    _PRICE_CACHE = load_price_data(config, use_cache=False, verbose=verbose)
+    load_price_data(config, force_reload=True)
 
 
 def get_cached_prices() -> Optional[pd.DataFrame]:
     """
-    Get cached price data without reloading
+    Получение закэшированных данных без перезагрузки
     
     Returns:
-        Cached DataFrame or None if not cached
+        pd.DataFrame или None если кэш пуст
     """
-    if _PRICE_CACHE is None:
-        return None
-    return _PRICE_CACHE.copy()
+    return _PRICE_CACHE.copy() if _PRICE_CACHE is not None else None
 
 
 def clear_cache() -> None:
-    """Clear the price data cache"""
+    """Очистка кэша данных"""
     global _PRICE_CACHE
     _PRICE_CACHE = None
 
 
-def split_data(
-    data: pd.DataFrame,
-    forward_date: str
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def load_multiframe_data(config: dict) -> Dict[str, pd.DataFrame]:
     """
-    Split data into In-Sample and Out-of-Sample
+    Загрузка данных с нескольких таймфреймов (для будущей реализации)
     
     Args:
-        data: Full dataset
-        forward_date: Date to split on (YYYY-MM-DD)
-        
+        config: Конфигурация с включенным multiframe
+    
     Returns:
-        Tuple of (in_sample, out_of_sample) DataFrames
+        dict: {timeframe: DataFrame}
     """
-    split_date = pd.to_datetime(forward_date)
+    if not config['data']['multiframe']['enabled']:
+        raise ValueError("Multiframe отключен в конфигурации")
     
-    in_sample = data[data.index < split_date]
-    out_of_sample = data[data.index >= split_date]
+    timeframes = config['data']['multiframe']['timeframes']
+    data = {}
     
-    return in_sample, out_of_sample
+    for tf in timeframes:
+        # TODO: реализовать загрузку разных таймфреймов
+        print(f"⚠️ Загрузка {tf}: не реализовано")
+    
+    return data
 
 
-def validate_data_quality(data: pd.DataFrame, verbose: bool = True) -> dict:
+# Дополнительные утилиты
+
+def resample_to_timeframe(df: pd.DataFrame, 
+                         target_tf: str) -> pd.DataFrame:
     """
-    Validate data quality and return statistics
+    Ресемплинг данных на другой таймфрейм
     
     Args:
-        data: DataFrame to validate
-        verbose: Print validation results
-        
+        df: Исходные данные
+        target_tf: Целевой таймфрейм ('5m', 'H1', 'D1' и т.д.)
+    
     Returns:
-        Dictionary with validation statistics
+        pd.DataFrame: Ресемплированные данные
     """
-    stats = {
-        'total_bars': len(data),
-        'missing_values': data.isnull().sum().sum(),
-        'zero_volume': (data['volume'] == 0).sum(),
-        'invalid_ohlc': ((data['high'] < data['low']) | 
-                        (data['high'] < data['open']) |
-                        (data['high'] < data['close']) |
-                        (data['low'] > data['open']) |
-                        (data['low'] > data['close'])).sum(),
-        'date_range': (data.index.min(), data.index.max()),
-        'avg_volume': data['volume'].mean(),
-        'price_range': (data['close'].min(), data['close'].max())
+    # Маппинг таймфреймов на pandas freq
+    tf_map = {
+        '1m': '1T', '5m': '5T', '15m': '15T', '30m': '30T',
+        'H1': '1H', 'H4': '4H', 'D1': '1D', 'W1': '1W', 'MN': '1M'
     }
     
-    if verbose:
-        print(f"\n📊 Data Quality Report:")
-        print(f"  Total bars: {stats['total_bars']:,}")
-        print(f"  Missing values: {stats['missing_values']}")
-        print(f"  Zero volume bars: {stats['zero_volume']}")
-        print(f"  Invalid OHLC: {stats['invalid_ohlc']}")
-        print(f"  Date range: {stats['date_range'][0].date()} → {stats['date_range'][1].date()}")
-        print(f"  Price range: ${stats['price_range'][0]:.2f} - ${stats['price_range'][1]:.2f}")
-        
-        if stats['missing_values'] > 0 or stats['invalid_ohlc'] > 0:
-            print(f"  ⚠️ Data quality issues detected!")
+    if target_tf not in tf_map:
+        raise ValueError(f"Неподдерживаемый таймфрейм: {target_tf}")
     
-    return stats
+    freq = tf_map[target_tf]
+    
+    # Если есть OHLC - агрегируем правильно
+    if 'open' in df.columns:
+        resampled = df.resample(freq).agg({
+            'open': 'first',
+            'high': 'max',
+            'low': 'min',
+            'close': 'last',
+            'volume': 'sum' if 'volume' in df.columns else 'mean'
+        })
+    else:
+        # Только close
+        resampled = df.resample(freq).last()
+    
+    return resampled.dropna()
 
 
-def save_processed_data(
-    data: pd.DataFrame,
-    config: dict,
-    suffix: str = "processed"
-) -> Path:
+def align_timeframes(primary_df: pd.DataFrame,
+                    secondary_df: pd.DataFrame) -> pd.DataFrame:
     """
-    Save processed data to disk
+    Выравнивание двух таймфреймов по индексу первичного
     
-    Args:
-        data: DataFrame to save
-        config: Configuration with output paths
-        suffix: Filename suffix
-        
-    Returns:
-        Path to saved file
+    Использование: добавление высших ТФ как контекст
     """
-    output_dir = Path(config['data']['paths']['processed'])
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    symbol = config['symbol']['name']
-    filename = f"{symbol}_{suffix}.parquet"
-    output_path = output_dir / filename
-    
-    data.to_parquet(output_path, compression='snappy')
-    
-    return output_path
-
-
-def load_processed_data(
-    config: dict,
-    suffix: str = "processed"
-) -> Optional[pd.DataFrame]:
-    """
-    Load previously processed data
-    
-    Args:
-        config: Configuration with paths
-        suffix: Filename suffix
-        
-    Returns:
-        DataFrame or None if not found
-    """
-    try:
-        input_dir = Path(config['data']['paths']['processed'])
-        symbol = config['symbol']['name']
-        filename = f"{symbol}_{suffix}.parquet"
-        input_path = input_dir / filename
-        
-        if not input_path.exists():
-            return None
-        
-        return pd.read_parquet(input_path)
-    except Exception:
-        return None
-
-
-# Convenient aliases
-load_data = load_price_data
-cache_data = cache_prices
+    # Форвард-филл для заполнения пропусков
+    aligned = secondary_df.reindex(primary_df.index, method='ffill')
+    return aligned

@@ -1,341 +1,328 @@
 """
-Feature engineering module
-Creates technical indicators and meta-features for ML models
+Feature Engineering для торговой системы
+
+Создание признаков:
+    - Main features: Standard Deviation на различных периодах
+    - Meta features: Skewness для кластеризации
+
+Принципы:
+    - Все признаки рассчитываются на основе цен закрытия
+    - Периоды задаются в конфигурации
+    - Признаки нормализованы и очищены от NaN
 """
 
 import pandas as pd
 import numpy as np
 from typing import List, Tuple
-from scipy.signal import savgol_filter
-from numba import njit
+from scipy.stats import skew
 
 
-@njit
-def _calculate_std_numba(prices: np.ndarray, period: int) -> np.ndarray:
+def create_features(data: pd.DataFrame,
+                   periods: List[int],
+                   meta_periods: List[int] = None) -> pd.DataFrame:
     """
-    Fast rolling standard deviation using Numba
+    Создание полного набора признаков для обучения
     
     Args:
-        prices: Price array
-        period: Window size
-        
-    Returns:
-        Array of standard deviations
-    """
-    n = len(prices)
-    result = np.full(n, np.nan)
+        data: DataFrame с колонкой 'close'
+        periods: Периоды для основных признаков (std)
+        meta_periods: Периоды для мета-признаков (skewness)
     
-    for i in range(period - 1, n):
-        window = prices[i - period + 1:i + 1]
-        result[i] = np.std(window)
+    Returns:
+        pd.DataFrame: Данные с добавленными признаками
+        
+    Структура выходных данных:
+        - Индекс: datetime
+        - close: исходная цена
+        - feat_0, feat_1, ...: std-признаки
+        - meta_0, meta_1, ...: skewness-признаки (если заданы)
+    """
+    if 'close' not in data.columns:
+        raise ValueError("Отсутствует колонка 'close'")
+    
+    result = data[['close']].copy()
+    
+    # === ОСНОВНЫЕ ПРИЗНАКИ (Standard Deviation) ===
+    print(f"📊 Создание признаков: {len(periods)} std-периодов", end='')
+    
+    for idx, period in enumerate(periods):
+        result[f'feat_{idx}'] = _calculate_rolling_std(
+            result['close'], 
+            period
+        )
+    
+    # === МЕТА-ПРИЗНАКИ (Skewness) ===
+    if meta_periods is not None and len(meta_periods) > 0:
+        print(f" + {len(meta_periods)} skewness-периодов")
+        
+        for idx, period in enumerate(meta_periods):
+            result[f'meta_{idx}'] = _calculate_rolling_skewness(
+                result['close'],
+                period
+            )
+    else:
+        print()
+    
+    # Удаление NaN (появляются из-за rolling операций)
+    initial_len = len(result)
+    result = result.dropna()
+    dropped = initial_len - len(result)
+    
+    if dropped > 0:
+        print(f"  ⚠ Удалено {dropped} NaN строк (из rolling окон)")
+    
+    print(f"  ✓ Итого признаков: {len(result.columns) - 1}")
     
     return result
 
 
-@njit
-def _calculate_skewness_numba(prices: np.ndarray, period: int) -> np.ndarray:
+def _calculate_rolling_std(series: pd.Series, period: int) -> pd.Series:
     """
-    Fast rolling skewness using Numba
+    Расчет скользящего стандартного отклонения
     
     Args:
-        prices: Price array
-        period: Window size
-        
-    Returns:
-        Array of skewness values
-    """
-    n = len(prices)
-    result = np.full(n, np.nan)
+        series: Временной ряд цен
+        period: Период окна
     
-    for i in range(period - 1, n):
-        window = prices[i - period + 1:i + 1]
-        mean = np.mean(window)
-        std = np.std(window)
-        
-        if std == 0:
-            result[i] = 0.0
-        else:
-            m3 = np.mean(((window - mean) / std) ** 3)
-            result[i] = m3
+    Returns:
+        pd.Series: Rolling standard deviation
+    """
+    return series.rolling(window=period).std()
+
+
+def _calculate_rolling_skewness(series: pd.Series, period: int) -> pd.Series:
+    """
+    Расчет скользящей асимметрии (skewness)
+    
+    Skewness показывает направление и величину асимметрии распределения:
+        - skew > 0: хвост справа (цены росли)
+        - skew < 0: хвост слева (цены падали)
+        - skew ≈ 0: симметричное распределение
+    
+    Args:
+        series: Временной ряд цен
+        period: Период окна
+    
+    Returns:
+        pd.Series: Rolling skewness
+    """
+    # Используем scipy.stats.skew через apply
+    return series.rolling(window=period).apply(
+        lambda x: skew(x, bias=False),
+        raw=True
+    )
+
+
+def create_features_multiframe(
+    primary_data: pd.DataFrame,
+    secondary_data_dict: dict,
+    periods: List[int]
+) -> pd.DataFrame:
+    """
+    Создание признаков с нескольких таймфреймов (для будущей реализации)
+    
+    Args:
+        primary_data: Основной таймфрейм
+        secondary_data_dict: {timeframe: DataFrame} с высшими ТФ
+        periods: Периоды для признаков
+    
+    Returns:
+        pd.DataFrame: Данные с мультифреймовыми признаками
+    """
+    result = create_features(primary_data, periods)
+    
+    # TODO: Добавить признаки с высших таймфреймов
+    # Например: дневной RSI, недельный High/Low и т.д.
     
     return result
 
 
-def create_features(
-    data: pd.DataFrame,
-    periods: List[int],
-    meta_periods: List[int],
-    verbose: bool = False
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def normalize_features(features: pd.DataFrame,
+                      method: str = 'standard') -> pd.DataFrame:
     """
-    Create main and meta features for ML model
-    
-    Main features: Standard deviation (std) for trading signals
-    Meta features: Skewness for market regime clustering
+    Нормализация признаков (опционально)
     
     Args:
-        data: OHLCV DataFrame
-        periods: Periods for main features (std)
-        meta_periods: Periods for meta features (skewness)
-        verbose: Print progress
-        
+        features: DataFrame с признаками
+        method: 'standard' (z-score) или 'minmax'
+    
     Returns:
-        Tuple of (features_main, features_meta) DataFrames
+        pd.DataFrame: Нормализованные признаки
     """
-    if verbose:
-        print(f"🔧 Creating features...")
-        print(f"   Main periods: {periods}")
-        print(f"   Meta periods: {meta_periods}")
+    from sklearn.preprocessing import StandardScaler, MinMaxScaler
     
-    close = data['close'].values
-    n = len(close)
+    # Отделяем close от признаков
+    close = features['close']
+    feat_cols = [col for col in features.columns if col != 'close']
     
-    # === MAIN FEATURES: Standard Deviation ===
-    features_main = pd.DataFrame(index=data.index)
+    if method == 'standard':
+        scaler = StandardScaler()
+    elif method == 'minmax':
+        scaler = MinMaxScaler()
+    else:
+        raise ValueError(f"Неизвестный метод нормализации: {method}")
     
-    for period in periods:
-        col_name = f'std_{period}'
-        features_main[col_name] = _calculate_std_numba(close, period)
+    normalized = pd.DataFrame(
+        scaler.fit_transform(features[feat_cols]),
+        columns=feat_cols,
+        index=features.index
+    )
     
-    # === META FEATURES: Skewness ===
-    features_meta = pd.DataFrame(index=data.index)
-    
-    for period in meta_periods:
-        col_name = f'skew_{period}'
-        features_meta[col_name] = _calculate_skewness_numba(close, period)
-    
-    # Remove NaN rows (from initial period)
-    max_period = max(max(periods), max(meta_periods))
-    features_main = features_main.iloc[max_period:]
-    features_meta = features_meta.iloc[max_period:]
-    
-    if verbose:
-        print(f"   ✅ Created {len(features_main.columns)} main features")
-        print(f"   ✅ Created {len(features_meta.columns)} meta features")
-        print(f"   Valid samples: {len(features_main):,}")
-    
-    return features_main, features_meta
-
-
-def add_price_context(
-    features: pd.DataFrame,
-    data: pd.DataFrame,
-    include_ohlc: bool = True
-) -> pd.DataFrame:
-    """
-    Add raw price information to features
-    
-    Args:
-        features: Existing features DataFrame
-        data: OHLCV data
-        include_ohlc: Include open, high, low, close
-        
-    Returns:
-        Features with added price context
-    """
-    features = features.copy()
-    
-    # Align indices
-    common_idx = features.index.intersection(data.index)
-    features = features.loc[common_idx]
-    data_aligned = data.loc[common_idx]
-    
-    if include_ohlc:
-        features['open'] = data_aligned['open']
-        features['high'] = data_aligned['high']
-        features['low'] = data_aligned['low']
-        features['close'] = data_aligned['close']
-    
-    features['volume'] = data_aligned['volume']
-    
-    return features
-
-
-def smooth_features(
-    features: pd.DataFrame,
-    window_length: int = 5,
-    polyorder: int = 2
-) -> pd.DataFrame:
-    """
-    Apply Savitzky-Golay filter to smooth features
-    
-    Args:
-        features: Features DataFrame
-        window_length: Window length (must be odd)
-        polyorder: Polynomial order
-        
-    Returns:
-        Smoothed features DataFrame
-    """
-    if window_length % 2 == 0:
-        window_length += 1
-    
-    smoothed = features.copy()
-    
-    for col in features.columns:
-        if features[col].dtype in [np.float64, np.float32]:
-            try:
-                smoothed[col] = savgol_filter(
-                    features[col].fillna(method='ffill'),
-                    window_length,
-                    polyorder,
-                    mode='nearest'
-                )
-            except Exception:
-                pass  # Keep original if smoothing fails
-    
-    return smoothed
-
-
-def normalize_features(
-    features: pd.DataFrame,
-    method: str = 'standard'
-) -> pd.DataFrame:
-    """
-    Normalize features
-    
-    Args:
-        features: Features DataFrame
-        method: 'standard' (z-score) or 'minmax' (0-1 scaling)
-        
-    Returns:
-        Normalized features
-    """
-    normalized = features.copy()
-    
-    for col in features.columns:
-        values = features[col].values
-        
-        if method == 'standard':
-            mean = np.nanmean(values)
-            std = np.nanstd(values)
-            if std > 0:
-                normalized[col] = (values - mean) / std
-        
-        elif method == 'minmax':
-            min_val = np.nanmin(values)
-            max_val = np.nanmax(values)
-            if max_val > min_val:
-                normalized[col] = (values - min_val) / (max_val - min_val)
+    normalized['close'] = close
     
     return normalized
 
 
-def create_additional_indicators(data: pd.DataFrame) -> pd.DataFrame:
+# === ДОПОЛНИТЕЛЬНЫЕ ПРИЗНАКИ (для экспериментов) ===
+
+def add_momentum_features(data: pd.DataFrame,
+                         periods: List[int]) -> pd.DataFrame:
     """
-    Create additional technical indicators
+    Добавление моментум-признаков
     
     Args:
-        data: OHLCV DataFrame
-        
+        data: Данные с колонкой 'close'
+        periods: Периоды для расчета
+    
     Returns:
-        DataFrame with indicators
+        pd.DataFrame: Данные с добавленными признаками
     """
-    indicators = pd.DataFrame(index=data.index)
+    result = data.copy()
     
-    close = data['close']
-    high = data['high']
-    low = data['low']
+    for period in periods:
+        # Rate of Change
+        result[f'roc_{period}'] = result['close'].pct_change(period)
+        
+        # Momentum
+        result[f'mom_{period}'] = result['close'].diff(period)
     
-    # ATR (Average True Range)
-    tr = pd.concat([
-        high - low,
-        (high - close.shift(1)).abs(),
-        (low - close.shift(1)).abs()
-    ], axis=1).max(axis=1)
-    indicators['atr_14'] = tr.rolling(14).mean()
-    
-    # RSI (Relative Strength Index)
-    delta = close.diff()
-    gain = delta.where(delta > 0, 0).rolling(14).mean()
-    loss = -delta.where(delta < 0, 0).rolling(14).mean()
-    rs = gain / loss
-    indicators['rsi_14'] = 100 - (100 / (1 + rs))
-    
-    # Moving averages
-    indicators['sma_20'] = close.rolling(20).mean()
-    indicators['sma_50'] = close.rolling(50).mean()
-    indicators['ema_12'] = close.ewm(span=12).mean()
-    indicators['ema_26'] = close.ewm(span=26).mean()
-    
-    # MACD
-    indicators['macd'] = indicators['ema_12'] - indicators['ema_26']
-    indicators['macd_signal'] = indicators['macd'].ewm(span=9).mean()
-    
-    # Bollinger Bands
-    sma_20 = close.rolling(20).mean()
-    std_20 = close.rolling(20).std()
-    indicators['bb_upper'] = sma_20 + 2 * std_20
-    indicators['bb_lower'] = sma_20 - 2 * std_20
-    indicators['bb_width'] = (indicators['bb_upper'] - indicators['bb_lower']) / sma_20
-    
-    return indicators
+    return result.dropna()
 
 
-def validate_features(
-    features: pd.DataFrame,
-    verbose: bool = True
-) -> dict:
+def add_volatility_features(data: pd.DataFrame,
+                           periods: List[int]) -> pd.DataFrame:
     """
-    Validate feature quality
+    Добавление волатильных признаков
     
     Args:
-        features: Features DataFrame
-        verbose: Print validation results
-        
+        data: Данные с колонкой 'close'
+        periods: Периоды для расчета
+    
     Returns:
-        Dictionary with validation statistics
+        pd.DataFrame: Данные с добавленными признаками
     """
-    stats = {
-        'n_features': len(features.columns),
-        'n_samples': len(features),
-        'missing_values': features.isnull().sum().sum(),
-        'infinite_values': np.isinf(features.values).sum(),
-        'constant_features': (features.std() == 0).sum(),
-        'feature_names': list(features.columns)
-    }
+    result = data.copy()
     
-    if verbose:
-        print(f"\n🔍 Feature Validation:")
-        print(f"   Features: {stats['n_features']}")
-        print(f"   Samples: {stats['n_samples']:,}")
-        print(f"   Missing: {stats['missing_values']}")
-        print(f"   Infinite: {stats['infinite_values']}")
-        print(f"   Constant: {stats['constant_features']}")
+    for period in periods:
+        # Historical Volatility (std of returns)
+        returns = result['close'].pct_change()
+        result[f'hvol_{period}'] = returns.rolling(period).std()
         
-        if stats['missing_values'] > 0 or stats['infinite_values'] > 0:
-            print(f"   ⚠️ Feature quality issues detected!")
+        # Average True Range (упрощенная версия без high/low)
+        result[f'atr_{period}'] = result['close'].diff().abs().rolling(period).mean()
     
-    return stats
+    return result.dropna()
 
 
-def get_feature_importance(
-    model,
-    features: pd.DataFrame
-) -> pd.DataFrame:
+def add_mean_reversion_features(data: pd.DataFrame,
+                                periods: List[int]) -> pd.DataFrame:
     """
-    Extract feature importance from trained model
+    Добавление mean-reversion признаков
     
     Args:
-        model: Trained CatBoost model
-        features: Features DataFrame
-        
-    Returns:
-        DataFrame with feature importance scores
-    """
-    try:
-        importance = model.get_feature_importance()
-        
-        importance_df = pd.DataFrame({
-            'feature': features.columns,
-            'importance': importance
-        })
-        
-        importance_df = importance_df.sort_values('importance', ascending=False)
-        importance_df['cumulative'] = importance_df['importance'].cumsum() / importance_df['importance'].sum()
-        
-        return importance_df
+        data: Данные с колонкой 'close'
+        periods: Периоды для расчета
     
-    except Exception as e:
-        print(f"Warning: Could not extract feature importance: {e}")
-        return pd.DataFrame()
+    Returns:
+        pd.DataFrame: Данные с добавленными признаками
+    """
+    result = data.copy()
+    
+    for period in periods:
+        # Z-score (отклонение от скользящей средней)
+        ma = result['close'].rolling(period).mean()
+        std = result['close'].rolling(period).std()
+        result[f'zscore_{period}'] = (result['close'] - ma) / std
+        
+        # Bollinger Bands distance
+        upper = ma + 2 * std
+        lower = ma - 2 * std
+        result[f'bb_dist_{period}'] = (result['close'] - ma) / (upper - lower)
+    
+    return result.dropna()
+
+
+# === УТИЛИТЫ ===
+
+def get_feature_columns(df: pd.DataFrame,
+                       prefix: str = 'feat_') -> List[str]:
+    """
+    Получение списка колонок с признаками
+    
+    Args:
+        df: DataFrame
+        prefix: Префикс признаков ('feat_', 'meta_')
+    
+    Returns:
+        list: Список имен колонок
+    """
+    return [col for col in df.columns if col.startswith(prefix)]
+
+
+def validate_features(df: pd.DataFrame) -> Tuple[bool, str]:
+    """
+    Валидация созданных признаков
+    
+    Проверки:
+        - Отсутствие inf значений
+        - Отсутствие NaN
+        - Отсутствие константных признаков
+    
+    Returns:
+        (bool, str): (валидность, сообщение об ошибке)
+    """
+    # Проверка на inf
+    if np.isinf(df.select_dtypes(include=[np.number])).any().any():
+        return False, "Обнаружены inf значения"
+    
+    # Проверка на NaN
+    if df.isna().any().any():
+        nan_cols = df.columns[df.isna().any()].tolist()
+        return False, f"Обнаружены NaN в колонках: {nan_cols}"
+    
+    # Проверка на константные признаки
+    numeric_cols = df.select_dtypes(include=[np.number]).columns
+    constant_cols = [
+        col for col in numeric_cols 
+        if df[col].nunique() == 1
+    ]
+    
+    if constant_cols:
+        return False, f"Константные признаки: {constant_cols}"
+    
+    return True, "OK"
+
+
+def print_feature_stats(df: pd.DataFrame) -> None:
+    """
+    Вывод статистики по признакам
+    
+    Полезно для отладки и проверки качества признаков
+    """
+    feat_cols = get_feature_columns(df, 'feat_')
+    meta_cols = get_feature_columns(df, 'meta_')
+    
+    print(f"\n📈 Статистика признаков:")
+    print(f"  • Основных (std): {len(feat_cols)}")
+    print(f"  • Мета (skewness): {len(meta_cols)}")
+    print(f"  • Всего строк: {len(df)}")
+    
+    if len(feat_cols) > 0:
+        print(f"\n  Диапазоны std-признаков:")
+        for col in feat_cols[:5]:  # Первые 5
+            print(f"    {col}: [{df[col].min():.4f}, {df[col].max():.4f}]")
+    
+    if len(meta_cols) > 0:
+        print(f"\n  Диапазоны skewness-признаков:")
+        for col in meta_cols:
+            print(f"    {col}: [{df[col].min():.4f}, {df[col].max():.4f}]")

@@ -1,393 +1,462 @@
 """
-Model training module
-Implements cluster-based model training with hyperparameter search
+Обучение кластерной торговой системы
+
+Архитектура:
+    1. Кластеризация данных по мета-признакам (skewness)
+    2. Обучение отдельной модели для каждого кластера:
+        - Main Model: торговые сигналы (std-признаки)
+        - Meta Model: фильтр кластера (skewness-признаки)
+    3. Валидация и отбор лучшей модели
 """
 
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Optional, Tuple
-from catboost import CatBoostClassifier
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
+from typing import Dict, List, Optional, Tuple
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+from catboost import CatBoostClassifier
 
-from ..data.loader import load_price_data, split_data
-from ..features.engineering import create_features
-from ..labeling.strategies import get_labels_one_direction
-from ..models.validator import (
+from src.data.loader import load_price_data
+from src.features.engineering import create_features, get_feature_columns
+from src.labeling.strategies import get_labels_one_direction
+from src.models.validator import (
     validate_class_balance,
     validate_sample_size,
-    calculate_classification_metrics
+    validate_cluster_sizes
 )
+from src.backtesting.tester import test_model_one_direction
 
 
 class ClusterModelTrainer:
     """
-    Trains separate CatBoost models for each market regime (cluster)
+    Тренер кластерной системы
+    
+    Workflow:
+        1. Загрузка данных
+        2. Создание признаков (std + skewness)
+        3. Разметка данных
+        4. Кластеризация по meta-признакам
+        5. Обучение модели для каждого кластера
+        6. Валидация и отбор лучшей
+    
+    Attributes:
+        config: Конфигурация обучения
+        data: Исторические данные
+        clusters: Метки кластеров
+        models: Обученные модели по кластерам
     """
     
     def __init__(self, config: dict):
         """
-        Initialize trainer with configuration
-        
         Args:
-            config: Configuration dictionary
+            config: Конфигурация с параметрами обучения
         """
         self.config = config
         self.data = None
-        self.features_main = None
-        self.features_meta = None
-        self.labels = None
         self.clusters = None
-        self.scaler = StandardScaler()
+        self.models = {}
         
-        # Extract key parameters
-        self.symbol = config['symbol']['name']
-        self.direction = config['trading']['direction']
-        self.markup = config.get('markup', config['trading']['labeling']['markup'])
-        self.n_clusters = config.get('n_clusters', config['clustering']['n_clusters'])
-        self.periods = config.get('periods', [5, 35, 65, 95, 125, 155, 185, 215, 245, 275])
-        self.meta_periods = config.get('periods_meta', [5])
-        self.min_samples = config.get('min_samples', 1000)
-        
-    def prepare_data(self, verbose: bool = True) -> bool:
-        """
-        Load and prepare all data for training
-        
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            # Load price data
-            self.data = load_price_data(self.config, verbose=verbose)
-            
-            # Create features
-            if verbose:
-                print(f"🔧 Creating features...")
-            
-            self.features_main, self.features_meta = create_features(
-                self.data,
-                self.periods,
-                self.meta_periods,
-                verbose=False
-            )
-            
-            # Create labels
-            if verbose:
-                print(f"🏷️  Creating labels (markup={self.markup})...")
-            
-            self.labels = get_labels_one_direction(
-                self.data,
-                markup=self.markup,
-                direction=self.direction,
-                min_bars=self.config['trading']['labeling']['min_bars'],
-                max_bars=self.config['trading']['labeling']['max_bars'],
-                verbose=False
-            )
-            
-            # Align all datasets
-            common_idx = (
-                self.features_main.index
-                .intersection(self.features_meta.index)
-                .intersection(self.labels.index)
-            )
-            
-            self.features_main = self.features_main.loc[common_idx]
-            self.features_meta = self.features_meta.loc[common_idx]
-            self.labels = self.labels.loc[common_idx]
-            
-            if verbose:
-                print(f"✅ Prepared {len(self.labels):,} samples")
-            
-            return True
-            
-        except Exception as e:
-            print(f"❌ Data preparation failed: {e}")
-            return False
+        print(f"\n{'='*70}")
+        print(f"  🎯 CLUSTER MODEL TRAINER")
+        print(f"{'='*70}")
+        print(f"  Symbol: {config['symbol']['name']}")
+        print(f"  Direction: {config['trading']['direction'].upper()}")
+        print(f"  N Clusters: {config.get('n_clusters', config['clustering']['n_clusters'])}")
+        print(f"{'='*70}\n")
     
-    def perform_clustering(self, verbose: bool = True) -> bool:
+    def train_all_clusters(self) -> List[Dict]:
         """
-        Cluster market regimes using meta-features
+        Обучение моделей для всех кластеров
         
         Returns:
-            True if successful
+            list: Список результатов для каждого кластера
+            [
+                {
+                    'cluster': 0,
+                    'model': CatBoostClassifier,
+                    'meta_model': CatBoostClassifier,
+                    'val_acc': 0.78,
+                    'r2': 0.92,
+                    'samples': 1200,
+                    'balance': 0.45,
+                    'dataset': DataFrame  # для тестирования
+                },
+                ...
+            ]
         """
-        try:
-            if verbose:
-                print(f"🎯 Clustering into {self.n_clusters} regimes...")
-            
-            # Scale meta-features
-            X_meta_scaled = self.scaler.fit_transform(self.features_meta)
-            
-            # K-Means clustering
-            kmeans = KMeans(
-                n_clusters=self.n_clusters,
-                random_state=self.config['clustering']['random_state'],
-                n_init=self.config['clustering']['n_init']
-            )
-            
-            self.clusters = kmeans.fit_predict(X_meta_scaled)
-            
-            # Analyze cluster distribution
-            unique, counts = np.unique(self.clusters, return_counts=True)
-            
-            if verbose:
-                print(f"\n📊 Cluster distribution:")
-                for cluster_id, count in zip(unique, counts):
-                    pct = count / len(self.clusters) * 100
-                    print(f"   Cluster {cluster_id}: {count:,} samples ({pct:.1f}%)")
-            
-            return True
-            
-        except Exception as e:
-            print(f"❌ Clustering failed: {e}")
-            return False
-    
-    def train_single_cluster(
-        self,
-        cluster_id: int,
-        verbose: bool = True
-    ) -> Optional[Dict]:
-        """
-        Train model for a single cluster
+        # 1. Подготовка данных
+        print("📊 Подготовка данных...")
+        self._prepare_data()
         
-        Args:
-            cluster_id: ID of cluster to train
-            verbose: Print training info
-            
-        Returns:
-            Dictionary with model and metrics, or None if failed
-        """
-        # Filter data for this cluster
-        cluster_mask = self.clusters == cluster_id
+        # 2. Кластеризация
+        print(f"\n🔬 Кластеризация...")
+        self._perform_clustering()
         
-        X_cluster = self.features_main[cluster_mask]
-        y_cluster = self.labels[cluster_mask]
-        X_meta_cluster = self.features_meta[cluster_mask]
-        
-        n_samples = len(X_cluster)
-        
-        if verbose:
-            print(f"\n{'─'*60}")
-            print(f"  Training Cluster {cluster_id}")
-            print(f"{'─'*60}")
-            print(f"  Samples: {n_samples:,}")
-        
-        # Validate sample size
-        if n_samples < self.min_samples:
-            if verbose:
-                print(f"  ⚠️ Insufficient samples (need {self.min_samples:,})")
-            return None
-        
-        # Validate class balance
-        balance_valid, balance_stats = validate_class_balance(
-            y_cluster,
-            min_ratio=self.config['validation']['criteria']['min_class_balance']
-        )
-        
-        if not balance_valid:
-            if verbose:
-                print(f"  ⚠️ Poor class balance: {balance_stats['minority_ratio']:.2%}")
-            return None
-        
-        # Split into train/validation
-        X_train, X_val, y_train, y_val = train_test_split(
-            X_cluster, y_cluster,
-            test_size=self.config['validation']['test_size'],
-            shuffle=self.config['validation']['shuffle'],
-            stratify=y_cluster if self.config['validation']['stratify'] else None,
-            random_state=self.config['validation']['random_state']
-        )
-        
-        X_meta_train, X_meta_val = train_test_split(
-            X_meta_cluster,
-            test_size=self.config['validation']['test_size'],
-            shuffle=self.config['validation']['shuffle'],
-            random_state=self.config['validation']['random_state']
-        )
-        
-        if verbose:
-            print(f"  Train: {len(X_train):,} | Val: {len(X_val):,}")
-            print(f"  Positive class: {(y_train == 1).mean():.2%}")
-        
-        # Train main model (trading signals)
-        if verbose:
-            print(f"\n  🚀 Training main model...")
-        
-        model_main = CatBoostClassifier(
-            iterations=self.config.get('iterations', 
-                                      self.config['model']['main']['params']['iterations']),
-            depth=self.config.get('depth',
-                                 self.config['model']['main']['params']['depth']),
-            learning_rate=self.config['model']['main']['params']['learning_rate'],
-            l2_leaf_reg=self.config['model']['main']['params']['l2_leaf_reg'],
-            eval_metric=self.config['model']['main']['params']['eval_metric'],
-            verbose=False,
-            use_best_model=True,
-            early_stopping_rounds=50,
-            random_seed=self.config['model']['main']['params']['random_seed']
-        )
-        
-        model_main.fit(
-            X_train, y_train,
-            eval_set=(X_val, y_val),
-            verbose=False
-        )
-        
-        # Train meta model (cluster filtering)
-        if verbose:
-            print(f"  🎯 Training meta model...")
-        
-        # Create binary labels: 1 if in current cluster, 0 otherwise
-        y_meta_train = (self.clusters[X_meta_train.index] == cluster_id).astype(int)
-        y_meta_val = (self.clusters[X_meta_val.index] == cluster_id).astype(int)
-        
-        model_meta = CatBoostClassifier(
-            iterations=self.config['model']['meta']['params']['iterations'],
-            depth=self.config['model']['meta']['params']['depth'],
-            learning_rate=self.config['model']['meta']['params']['learning_rate'],
-            l2_leaf_reg=self.config['model']['meta']['params']['l2_leaf_reg'],
-            eval_metric=self.config['model']['meta']['params']['eval_metric'],
-            verbose=False,
-            use_best_model=True,
-            early_stopping_rounds=30,
-            random_seed=self.config['model']['meta']['params']['random_seed']
-        )
-        
-        model_meta.fit(
-            X_meta_train, y_meta_train,
-            eval_set=(X_meta_val, y_meta_val),
-            verbose=False
-        )
-        
-        # Calculate metrics
-        y_pred_val = model_main.predict(X_val)
-        metrics = calculate_classification_metrics(y_val, y_pred_val)
-        
-        if verbose:
-            print(f"\n  📊 Results:")
-            print(f"     Val Accuracy: {metrics['accuracy']:.4f}")
-            print(f"     Val F1: {metrics['f1']:.4f}")
-            print(f"     Precision: {metrics['precision']:.4f}")
-            print(f"     Recall: {metrics['recall']:.4f}")
-        
-        # Prepare result
-        result = {
-            'cluster': cluster_id,
-            'model': model_main,
-            'meta_model': model_meta,
-            'val_acc': metrics['accuracy'],
-            'val_f1': metrics['f1'],
-            'precision': metrics['precision'],
-            'recall': metrics['recall'],
-            'samples': n_samples,
-            'balance': balance_stats['minority_ratio'],
-            'X_val': X_val,
-            'y_val': y_val,
-            'dataset': self.data  # For later testing
-        }
-        
-        return result
-    
-    def train_all_clusters(self, verbose: bool = True) -> List[Dict]:
-        """
-        Train models for all clusters
-        
-        Returns:
-            List of successfully trained models
-        """
-        if self.data is None:
-            if not self.prepare_data(verbose=verbose):
-                return []
-        
-        if self.clusters is None:
-            if not self.perform_clustering(verbose=verbose):
-                return []
-        
+        # 3. Обучение для каждого кластера
         results = []
+        n_clusters = len(np.unique(self.clusters))
         
-        for cluster_id in range(self.n_clusters):
+        print(f"\n🎓 Обучение {n_clusters} моделей...")
+        
+        for cluster_id in range(n_clusters):
+            print(f"\n  Кластер {cluster_id}:")
+            
             try:
-                result = self.train_single_cluster(cluster_id, verbose=verbose)
+                result = self._train_single_cluster(cluster_id)
                 
                 if result is not None:
                     results.append(result)
+                    print(f"    ✓ Val Acc: {result['val_acc']:.4f} | "
+                          f"R²: {result['r2']:.4f} | "
+                          f"Samples: {result['samples']}")
+                else:
+                    print(f"    ✗ Пропущен")
                     
-                    if verbose:
-                        print(f"  ✅ Cluster {cluster_id} trained successfully")
-                
             except Exception as e:
-                if verbose:
-                    print(f"  ❌ Cluster {cluster_id} failed: {e}")
+                print(f"    ⚠️ Ошибка: {e}")
                 continue
         
-        if verbose:
-            print(f"\n{'='*60}")
-            print(f"  ✅ Trained {len(results)}/{self.n_clusters} clusters")
-            print(f"{'='*60}")
+        print(f"\n{'─'*70}")
+        print(f"  ✅ Обучено моделей: {len(results)}/{n_clusters}")
+        print(f"{'─'*70}\n")
         
         return results
     
-    def get_best_model(self, results: List[Dict]) -> Optional[Dict]:
+    def _prepare_data(self) -> None:
+        """Загрузка, создание признаков и разметка"""
+        # Загрузка цен
+        prices = load_price_data(self.config)
+        
+        # Создание признаков
+        periods = self.config['periods']
+        meta_periods = self.config['periods_meta']
+        
+        features = create_features(prices, periods, meta_periods)
+        
+        # Разметка
+        labeled = get_labels_one_direction(
+            features,
+            markup=self.config['markup'],
+            min_bars=self.config['trading']['labeling']['min_bars'],
+            max_bars=self.config['trading']['labeling']['max_bars'],
+            direction=self.config['trading']['direction']
+        )
+        
+        self.data = labeled
+        
+        # Валидация
+        valid, errors = self._validate_data()
+        if not valid:
+            raise ValueError(f"Данные не прошли валидацию: {errors}")
+    
+    def _validate_data(self) -> Tuple[bool, List[str]]:
+        """Валидация подготовленных данных"""
+        errors = []
+        
+        # Размер
+        min_samples = self.config.get('min_samples', 1000)
+        valid, msg = validate_sample_size(self.data, min_samples)
+        if not valid:
+            errors.append(msg)
+        
+        # Баланс классов
+        min_balance = self.config['validation']['criteria']['min_class_balance']
+        valid, balance, msg = validate_class_balance(
+            self.data['labels'],
+            min_balance
+        )
+        if not valid:
+            errors.append(msg)
+        
+        return len(errors) == 0, errors
+    
+    def _perform_clustering(self) -> None:
         """
-        Select best model from results
+        Кластеризация данных по мета-признакам
+        
+        Алгоритм:
+            1. Извлечение meta-признаков (skewness)
+            2. Нормализация через StandardScaler
+            3. KMeans кластеризация
+            4. Валидация качества кластеров
+        """
+        # Извлечение meta-признаков
+        meta_cols = get_feature_columns(self.data, 'meta_')
+        
+        if len(meta_cols) == 0:
+            raise ValueError("Нет мета-признаков для кластеризации")
+        
+        meta_features = self.data[meta_cols].values
+        
+        # Нормализация
+        scaler = StandardScaler()
+        meta_scaled = scaler.fit_transform(meta_features)
+        
+        # KMeans
+        n_clusters = self.config.get('n_clusters', 
+                                    self.config['clustering']['n_clusters'])
+        random_state = self.config['clustering']['random_state']
+        n_init = self.config['clustering']['n_init']
+        
+        kmeans = KMeans(
+            n_clusters=n_clusters,
+            random_state=random_state,
+            n_init=n_init
+        )
+        
+        self.clusters = kmeans.fit_predict(meta_scaled)
+        
+        # Валидация кластеров
+        min_cluster_size = self.config.get('min_samples', 100)
+        valid, sizes, msg = validate_cluster_sizes(
+            self.clusters,
+            min_cluster_size
+        )
+        
+        print(f"  Кластеров: {n_clusters}")
+        print(f"  Размеры: {sizes}")
+        
+        if not valid:
+            print(f"  ⚠️ Предупреждение: {msg}")
+    
+    def _train_single_cluster(self, cluster_id: int) -> Optional[Dict]:
+        """
+        Обучение модели для одного кластера
         
         Args:
-            results: List of training results
-            
+            cluster_id: ID кластера
+        
         Returns:
-            Best model result or None
+            dict: Результаты обучения или None при ошибке
         """
-        if not results:
+        # Отбор данных кластера
+        cluster_mask = self.clusters == cluster_id
+        cluster_data = self.data[cluster_mask].copy()
+        
+        # Проверка размера
+        min_samples = self.config.get('min_samples', 100)
+        if len(cluster_data) < min_samples:
+            print(f"    Мало данных: {len(cluster_data)} < {min_samples}")
             return None
         
-        # Sort by validation accuracy
-        best = max(results, key=lambda x: x['val_acc'])
+        # Проверка баланса
+        min_balance = self.config['validation']['criteria']['min_class_balance']
+        valid, balance, msg = validate_class_balance(
+            cluster_data['labels'],
+            min_balance
+        )
         
-        return best
+        if not valid:
+            print(f"    Дисбаланс: {balance:.3f} < {min_balance}")
+            return None
+        
+        # Разделение на train/test
+        train_data, test_data = self._split_data(cluster_data)
+        
+        # Обучение Main Model (торговые сигналы)
+        main_model = self._train_main_model(train_data, test_data)
+        
+        # Обучение Meta Model (фильтр кластера)
+        meta_model = self._train_meta_model(train_data, test_data)
+        
+        # Валидация на тестовых данных
+        val_acc = main_model.score(
+            test_data[get_feature_columns(test_data, 'feat_')],
+            test_data['labels']
+        )
+        
+        # Подготовка датасета для R² теста
+        test_dataset = self._prepare_test_dataset(
+            cluster_data,
+            main_model,
+            meta_model
+        )
+        
+        # Расчет R² (качество торговой стратегии)
+        r2 = test_model_one_direction(
+            dataset=test_dataset,
+            result=[main_model, meta_model],
+            config=self.config,
+            plt=False
+        )
+        
+        return {
+            'cluster': cluster_id,
+            'model': main_model,
+            'meta_model': meta_model,
+            'val_acc': val_acc,
+            'r2': r2,
+            'samples': len(cluster_data),
+            'balance': balance,
+            'dataset': test_dataset
+        }
+    
+    def _split_data(self, data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Разделение на train/test с сохранением временного порядка"""
+        train_size = self.config['validation']['train_size']
+        shuffle = self.config['validation']['shuffle']
+        stratify = self.config['validation']['stratify']
+        random_state = self.config['validation']['random_state']
+        
+        if shuffle and stratify:
+            # Стратифицированное разделение
+            train_data, test_data = train_test_split(
+                data,
+                train_size=train_size,
+                shuffle=True,
+                stratify=data['labels'],
+                random_state=random_state
+            )
+        else:
+            # Временное разделение
+            split_idx = int(len(data) * train_size)
+            train_data = data.iloc[:split_idx]
+            test_data = data.iloc[split_idx:]
+        
+        return train_data, test_data
+    
+    def _train_main_model(self,
+                         train_data: pd.DataFrame,
+                         test_data: pd.DataFrame) -> CatBoostClassifier:
+        """
+        Обучение основной модели (торговые сигналы)
+        
+        Использует std-признаки для предсказания направления
+        """
+        # Признаки и метки
+        feat_cols = get_feature_columns(train_data, 'feat_')
+        X_train = train_data[feat_cols]
+        y_train = train_data['labels'].astype('int16')
+        X_test = test_data[feat_cols]
+        y_test = test_data['labels'].astype('int16')
+        
+        # Параметры модели
+        model_params = self.config['model']['main']['params'].copy()
+        
+        # Переопределение из конфига поиска
+        if 'iterations' in self.config:
+            model_params['iterations'] = self.config['iterations']
+        if 'depth' in self.config:
+            model_params['depth'] = self.config['depth']
+        
+        # Обучение
+        model = CatBoostClassifier(**model_params)
+        model.fit(
+            X_train, y_train,
+            eval_set=(X_test, y_test),
+            early_stopping_rounds=model_params.get('early_stopping_rounds', 50),
+            plot=False
+        )
+        
+        return model
+    
+    def _train_meta_model(self,
+                         train_data: pd.DataFrame,
+                         test_data: pd.DataFrame) -> CatBoostClassifier:
+        """
+        Обучение мета-модели (фильтр кластера)
+        
+        Использует skewness-признаки для определения режима рынка
+        """
+        # Мета-признаки
+        meta_cols = get_feature_columns(train_data, 'meta_')
+        
+        # Если мета-признаков нет, используем все признаки
+        if len(meta_cols) == 0:
+            meta_cols = get_feature_columns(train_data, 'feat_')
+        
+        X_train = train_data[meta_cols]
+        y_train = train_data['labels'].astype('int16')
+        X_test = test_data[meta_cols]
+        y_test = test_data['labels'].astype('int16')
+        
+        # Параметры мета-модели (обычно проще чем main)
+        meta_params = self.config['model']['meta']['params'].copy()
+        
+        # Обучение
+        meta_model = CatBoostClassifier(**meta_params)
+        meta_model.fit(
+            X_train, y_train,
+            eval_set=(X_test, y_test),
+            early_stopping_rounds=meta_params.get('early_stopping_rounds', 30),
+            plot=False
+        )
+        
+        return meta_model
+    
+    def _prepare_test_dataset(self,
+                             data: pd.DataFrame,
+                             main_model: CatBoostClassifier,
+                             meta_model: CatBoostClassifier) -> pd.DataFrame:
+        """
+        Подготовка датасета для R² теста
+        
+        Добавляет предсказания моделей как labels и meta_labels
+        """
+        dataset = data.copy()
+        
+        # Признаки
+        feat_cols = get_feature_columns(dataset, 'feat_')
+        meta_cols = get_feature_columns(dataset, 'meta_')
+        
+        if len(meta_cols) == 0:
+            meta_cols = feat_cols
+        
+        # Предсказания
+        dataset['labels'] = main_model.predict_proba(dataset[feat_cols])[:, 1]
+        dataset['meta_labels'] = meta_model.predict_proba(dataset[meta_cols])[:, 1]
+        
+        # Бинаризация (порог 0.5)
+        dataset['labels'] = dataset['labels'].apply(lambda x: 1.0 if x >= 0.5 else 0.0)
+        dataset['meta_labels'] = dataset['meta_labels'].apply(lambda x: 1.0 if x >= 0.5 else 0.0)
+        
+        return dataset
 
 
-def fit_model(
-    dataset: pd.DataFrame,
-    result: List,
-    config: dict,
-    verbose: bool = False
-) -> Tuple[CatBoostClassifier, CatBoostClassifier, dict]:
+# === ДОПОЛНИТЕЛЬНЫЕ УТИЛИТЫ ===
+
+def select_best_model(results: List[Dict],
+                     metric: str = 'val_acc') -> Dict:
     """
-    Legacy compatibility function
-    Fits models and returns them with statistics
+    Выбор лучшей модели из результатов
     
     Args:
-        dataset: OHLCV DataFrame
-        result: Empty list (will be populated)
-        config: Configuration dictionary
-        verbose: Print training info
-        
+        results: Список результатов обучения
+        metric: Метрика для сравнения ('val_acc', 'r2')
+    
     Returns:
-        Tuple of (main_model, meta_model, statistics)
+        dict: Лучшая модель
     """
-    trainer = ClusterModelTrainer(config)
-    
-    if not trainer.prepare_data(verbose=verbose):
-        raise ValueError("Data preparation failed")
-    
-    if not trainer.perform_clustering(verbose=verbose):
-        raise ValueError("Clustering failed")
-    
-    results = trainer.train_all_clusters(verbose=verbose)
-    
     if not results:
-        raise ValueError("No models trained successfully")
+        raise ValueError("Нет результатов для выбора")
     
-    best = trainer.get_best_model(results)
-    result.append(best['model'])
-    result.append(best['meta_model'])
+    return max(results, key=lambda x: x[metric])
+
+
+def save_model(result: Dict, filepath: str) -> None:
+    """
+    Сохранение модели на диск
     
-    stats = {
-        'val_accuracy': best['val_acc'],
-        'val_f1': best['val_f1'],
-        'cluster': best['cluster'],
-        'samples': best['samples']
-    }
+    Args:
+        result: Результат обучения с моделями
+        filepath: Путь для сохранения (.cbm)
+    """
+    result['model'].save_model(filepath)
+    print(f"✓ Модель сохранена: {filepath}")
+
+
+def load_model(filepath: str) -> CatBoostClassifier:
+    """
+    Загрузка модели с диска
     
-    return best['model'], best['meta_model'], stats
+    Args:
+        filepath: Путь к файлу .cbm
+    
+    Returns:
+        CatBoostClassifier: Загруженная модель
+    """
+    model = CatBoostClassifier()
+    model.load_model(filepath)
+    print(f"✓ Модель загружена: {filepath}")
+    return model

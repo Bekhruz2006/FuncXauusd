@@ -1,384 +1,401 @@
 """
-ONNX export module
-Exports trained CatBoost models to ONNX format for MetaTrader 5
+Экспорт моделей в ONNX и генерация MQL5 кода
+
+Генерируемые файлы:
+    1. catmodel_SYMBOL_N.onnx - основная модель
+    2. catmodel_m_SYMBOL_N.onnx - мета-модель
+    3. SYMBOL_ONNX_include_N.mqh - include файл для MT5
 """
 
-import os
+import re
 from pathlib import Path
-from typing import Tuple, List
-import numpy as np
+from typing import List
+from catboost import CatBoostClassifier
 
 
 def export_to_onnx(
-    model_main,
-    model_meta,
+    model_main: CatBoostClassifier,
+    model_meta: CatBoostClassifier,
     config: dict,
-    r2_score: float
-) -> Tuple[Path, Path]:
+    r2_score: float,
+    model_number: int = 0
+) -> None:
     """
-    Export trained models to ONNX format
+    Полный экспорт системы для MetaTrader 5
     
     Args:
-        model_main: Main CatBoost model (trading signals)
-        model_meta: Meta CatBoost model (cluster filtering)
-        config: Configuration dictionary
-        r2_score: Model R² score for filename
-        
-    Returns:
-        Tuple of (main_model_path, meta_model_path)
+        model_main: Обученная основная модель
+        model_meta: Обученная мета-модель
+        config: Конфигурация с параметрами
+        r2_score: R² score модели (для логирования)
+        model_number: Номер модели (если несколько)
+    
+    Side Effects:
+        Создает файлы в директории export_path:
+            - 2 ONNX файла
+            - 1 MQL include файл
     """
-    # Create output directory
-    output_dir = Path(config['export']['paths']['onnx'])
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Generate filenames
+    # Параметры
     symbol = config['symbol']['name']
-    direction = config['trading']['direction']
-    r2_str = f"{r2_score:.4f}".replace('.', '_')
+    periods = config['periods']
+    periods_meta = config['periods_meta']
+    export_path = Path(config['export']['paths']['onnx'])
     
-    main_filename = f"{symbol}_{direction}_main_r2_{r2_str}.onnx"
-    meta_filename = f"{symbol}_{direction}_meta_r2_{r2_str}.onnx"
+    # Создание директории
+    export_path.mkdir(parents=True, exist_ok=True)
     
-    main_path = output_dir / main_filename
-    meta_path = output_dir / meta_filename
+    print(f"\n💾 Экспорт в MetaTrader 5...")
+    print(f"  Symbol: {symbol}")
+    print(f"  R² Score: {r2_score:.4f}")
+    print(f"  Model Number: {model_number}")
     
-    print(f"\n💾 Exporting to ONNX...")
+    # 1. Экспорт ONNX моделей
+    _export_onnx_models(
+        model_main, model_meta,
+        symbol, model_number,
+        export_path
+    )
     
-    # Export main model
-    try:
-        model_main.save_model(
-            str(main_path),
-            format='onnx',
-            export_parameters={
-                'onnx_domain': config['export']['onnx']['domain'],
-                'onnx_model_version': config['export']['onnx']['model_version'],
-                'onnx_graph_name': f'{symbol}_main'
-            }
-        )
-        print(f"   ✅ Main model: {main_filename}")
-    except Exception as e:
-        print(f"   ❌ Main model export failed: {e}")
-        raise
+    # 2. Генерация MQL include файла
+    _generate_mql_include(
+        symbol, model_number,
+        periods, periods_meta,
+        export_path
+    )
     
-    # Export meta model
-    try:
-        model_meta.save_model(
-            str(meta_path),
-            format='onnx',
-            export_parameters={
-                'onnx_domain': config['export']['onnx']['domain'],
-                'onnx_model_version': config['export']['onnx']['model_version'],
-                'onnx_graph_name': f'{symbol}_meta'
-            }
-        )
-        print(f"   ✅ Meta model: {meta_filename}")
-    except Exception as e:
-        print(f"   ❌ Meta model export failed: {e}")
-        raise
+    print(f"\n  ✅ Экспорт завершен!")
+    print(f"  📁 Файлы: {export_path}")
+    print(f"\n  📋 Следующие шаги:")
+    print(f"    1. Скопировать *.onnx в: MQL5/Experts/Files/")
+    print(f"    2. Скопировать *.mqh в: MQL5/Include/")
+    print(f"    3. Перекомпилировать советник в MT5")
+
+
+def _export_onnx_models(
+    model_main: CatBoostClassifier,
+    model_meta: CatBoostClassifier,
+    symbol: str,
+    model_number: int,
+    export_path: Path
+) -> None:
+    """
+    Экспорт двух моделей в формат ONNX
     
-    # Generate MQL include file
-    mqh_path = _generate_mql_include(config, main_filename, meta_filename)
-    print(f"   ✅ MQL include: {mqh_path.name}")
+    ONNX параметры:
+        - domain: ai.catboost
+        - opset_version: 12 (совместим с MT5)
+        - doc_string: описание модели
+    """
+    # Параметры ONNX экспорта
+    onnx_params = {
+        'onnx_domain': 'ai.catboost',
+        'onnx_model_version': 1,
+        'onnx_graph_name': 'CatBoostModel'
+    }
     
-    print(f"\n📁 Exported files:")
-    print(f"   {main_path}")
-    print(f"   {meta_path}")
-    print(f"   {mqh_path}")
+    # === Main Model ===
+    main_filename = f"catmodel {symbol} {model_number}.onnx"
+    main_path = export_path / main_filename
     
-    return main_path, meta_path
+    model_main.save_model(
+        str(main_path),
+        format="onnx",
+        export_parameters={
+            **onnx_params,
+            'onnx_doc_string': 'Main trading model (std features)'
+        },
+        pool=None
+    )
+    print(f"  ✓ Main model: {main_filename}")
+    
+    # === Meta Model ===
+    meta_filename = f"catmodel_m {symbol} {model_number}.onnx"
+    meta_path = export_path / meta_filename
+    
+    model_meta.save_model(
+        str(meta_path),
+        format="onnx",
+        export_parameters={
+            **onnx_params,
+            'onnx_doc_string': 'Meta filter model (skewness features)'
+        },
+        pool=None
+    )
+    print(f"  ✓ Meta model: {meta_filename}")
 
 
 def _generate_mql_include(
-    config: dict,
-    main_filename: str,
-    meta_filename: str
-) -> Path:
+    symbol: str,
+    model_number: int,
+    periods: List[int],
+    periods_meta: List[int],
+    export_path: Path
+) -> None:
     """
-    Generate MQL5 include file with model configuration
+    Генерация MQL5 include файла
     
-    Args:
-        config: Configuration dictionary
-        main_filename: Main model filename
-        meta_filename: Meta model filename
-        
-    Returns:
-        Path to generated .mqh file
+    Файл содержит:
+        1. #resource директивы для загрузки ONNX
+        2. Массивы периодов для признаков
+        3. Функции расчета признаков (fill_arays)
+    """
+    code_lines = []
+    
+    # === HEADER ===
+    code_lines.extend([
+        "// Auto-generated ONNX include file",
+        f"// Symbol: {symbol}",
+        f"// Model: {model_number}",
+        "// DO NOT EDIT MANUALLY",
+        "",
+        "#include <Math\\Stat\\Math.mqh>",
+        ""
+    ])
+    
+    # === RESOURCE DIRECTIVES ===
+    code_lines.extend([
+        f"#resource \"catmodel {symbol} {model_number}.onnx\" as uchar ExtModel_{symbol}_{model_number}[]",
+        f"#resource \"catmodel_m {symbol} {model_number}.onnx\" as uchar ExtModel2_{symbol}_{model_number}[]",
+        ""
+    ])
+    
+    # === PERIOD ARRAYS ===
+    code_lines.extend([
+        f"int Periods{symbol}_{model_number}[{len(periods)}] = {{{','.join(map(str, periods))}}};",
+        f"int Periods_m{symbol}_{model_number}[{len(periods_meta)}] = {{{','.join(map(str, periods_meta))}}};",
+        ""
+    ])
+    
+    # === MAIN FEATURES FUNCTION (STD) ===
+    code_lines.extend([
+        f"void fill_arays{symbol}_{model_number}(double &features[]) {{",
+        "   double pr[], ret[];",
+        "   ArrayResize(ret, 1);",
+        f"   for(int i=ArraySize(Periods{symbol}_{model_number})-1; i>=0; i--) {{",
+        f"       CopyClose(NULL, PERIOD_H1, 1, Periods{symbol}_{model_number}[i], pr);",
+        "       ret[0] = MathStandardDeviation(pr);",  # STD для main модели
+        "       ArrayInsert(features, ret, ArraySize(features), 0, WHOLE_ARRAY);",
+        "   }",
+        "   ArraySetAsSeries(features, true);",
+        "}",
+        ""
+    ])
+    
+    # === META FEATURES FUNCTION (SKEWNESS) ===
+    code_lines.extend([
+        f"void fill_arays_m{symbol}_{model_number}(double &features[]) {{",
+        "   double pr[], ret[];",
+        "   ArrayResize(ret, 1);",
+        f"   for(int i=ArraySize(Periods_m{symbol}_{model_number})-1; i>=0; i--) {{",
+        f"       CopyClose(NULL, PERIOD_H1, 1, Periods_m{symbol}_{model_number}[i], pr);",
+        "       ret[0] = MathSkewness(pr);",  # Skewness для meta модели
+        "       ArrayInsert(features, ret, ArraySize(features), 0, WHOLE_ARRAY);",
+        "   }",
+        "   ArraySetAsSeries(features, true);",
+        "}",
+        ""
+    ])
+    
+    # === SAVE FILE ===
+    filename = f"{symbol} ONNX include {model_number}.mqh"
+    filepath = export_path / filename
+    
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(code_lines))
+    
+    print(f"  ✓ MQL include: {filename}")
+    print(f"    • Main features: {len(periods)} (std)")
+    print(f"    • Meta features: {len(periods_meta)} (skewness)")
+
+
+# === АЛЬТЕРНАТИВНЫЕ ФОРМАТЫ ЭКСПОРТА ===
+
+def export_to_cpp(
+    model_main: CatBoostClassifier,
+    model_meta: CatBoostClassifier,
+    config: dict,
+    model_number: int = 0
+) -> None:
+    """
+    Экспорт в C++ код (для встраивания в MQL5)
+    
+    Note:
+        Генерирует огромный файл. ONNX предпочтительнее.
+        Используйте только если ONNX не работает.
     """
     symbol = config['symbol']['name']
-    periods = config.get('periods', [5, 35, 65, 95, 125, 155, 185, 215, 245, 275])
-    meta_periods = config.get('periods_meta', [5])
+    export_path = Path(config['export']['paths']['onnx'])
+    export_path.mkdir(parents=True, exist_ok=True)
     
-    # MQL5 code template
-    mqh_content = f"""//+------------------------------------------------------------------+
-//| {symbol} Model Configuration                                      |
-//| Auto-generated by FuncXauusd export system                       |
-//+------------------------------------------------------------------+
-
-#property copyright "FuncXauusd Trading System"
-#property version   "1.00"
-
-// Model filenames
-#define MODEL_MAIN_FILE "{main_filename}"
-#define MODEL_META_FILE "{meta_filename}"
-
-// Feature periods for main model
-int Periods{symbol.replace('-', '_')}[] = {{
-    {', '.join(map(str, periods))}
-}};
-
-// Feature periods for meta model
-int PeriodsMeta{symbol.replace('-', '_')}[] = {{
-    {', '.join(map(str, meta_periods))}
-}};
-
-// Number of features
-#define N_FEATURES_MAIN {len(periods)}
-#define N_FEATURES_META {len(meta_periods)}
-
-//+------------------------------------------------------------------+
-//| Fill main features array                                          |
-//+------------------------------------------------------------------+
-void fill_arrays_main(double &features[], const double &close[])
-{{
-    ArrayResize(features, N_FEATURES_MAIN);
+    # Main model
+    main_cpp = export_path / f"catmodel_{symbol}_{model_number}.h"
+    model_main.save_model(
+        str(main_cpp),
+        format="cpp",
+        export_parameters=None,
+        pool=None
+    )
     
-    for(int i = 0; i < N_FEATURES_MAIN; i++)
-    {{
-        int period = Periods{symbol.replace('-', '_')}[i];
-        features[i] = CalculateStd(close, period);
-    }}
-}}
-
-//+------------------------------------------------------------------+
-//| Fill meta features array                                          |
-//+------------------------------------------------------------------+
-void fill_arrays_meta(double &features[], const double &close[])
-{{
-    ArrayResize(features, N_FEATURES_META);
+    # Meta model
+    meta_cpp = export_path / f"catmodel_m_{symbol}_{model_number}.h"
+    model_meta.save_model(
+        str(meta_cpp),
+        format="cpp",
+        export_parameters=None,
+        pool=None
+    )
     
-    for(int i = 0; i < N_FEATURES_META; i++)
-    {{
-        int period = PeriodsMeta{symbol.replace('-', '_')}[i];
-        features[i] = CalculateSkewness(close, period);
-    }}
-}}
-
-//+------------------------------------------------------------------+
-//| Calculate standard deviation                                      |
-//+------------------------------------------------------------------+
-double CalculateStd(const double &data[], int period)
-{{
-    if(period <= 0 || period > ArraySize(data))
-        return 0.0;
-    
-    double sum = 0.0;
-    for(int i = 0; i < period; i++)
-        sum += data[i];
-    
-    double mean = sum / period;
-    
-    double variance = 0.0;
-    for(int i = 0; i < period; i++)
-    {{
-        double diff = data[i] - mean;
-        variance += diff * diff;
-    }}
-    
-    variance /= period;
-    
-    return MathSqrt(variance);
-}}
-
-//+------------------------------------------------------------------+
-//| Calculate skewness                                                |
-//+------------------------------------------------------------------+
-double CalculateSkewness(const double &data[], int period)
-{{
-    if(period <= 0 || period > ArraySize(data))
-        return 0.0;
-    
-    // Calculate mean
-    double sum = 0.0;
-    for(int i = 0; i < period; i++)
-        sum += data[i];
-    double mean = sum / period;
-    
-    // Calculate std
-    double variance = 0.0;
-    for(int i = 0; i < period; i++)
-    {{
-        double diff = data[i] - mean;
-        variance += diff * diff;
-    }}
-    double std = MathSqrt(variance / period);
-    
-    if(std == 0.0)
-        return 0.0;
-    
-    // Calculate skewness
-    double m3 = 0.0;
-    for(int i = 0; i < period; i++)
-    {{
-        double z = (data[i] - mean) / std;
-        m3 += z * z * z;
-    }}
-    
-    return m3 / period;
-}}
-
-//+------------------------------------------------------------------+
-//| Configuration parameters                                          |
-//+------------------------------------------------------------------+
-#define SYMBOL "{symbol}"
-#define DIRECTION "{config['trading']['direction']}"
-#define STOP_LOSS {config['trading']['risk']['stop_loss']}
-#define TAKE_PROFIT {config['trading']['risk']['take_profit']}
-#define RISK_PER_TRADE {config['trading']['risk']['risk_per_trade']}
-#define MAX_POSITIONS {config['trading']['risk']['max_positions']}
-#define SPREAD_LIMIT {config['trading']['risk']['spread_limit']}
-
-//+------------------------------------------------------------------+
-"""
-    
-    # Save to file
-    output_dir = Path(config['export']['paths']['onnx'])
-    mqh_filename = f"{symbol}_ModelInclude.mqh"
-    mqh_path = output_dir / mqh_filename
-    
-    with open(mqh_path, 'w', encoding='utf-8') as f:
-        f.write(mqh_content)
-    
-    return mqh_path
+    print(f"  ✓ C++ export: {main_cpp.name}, {meta_cpp.name}")
+    print(f"  ⚠️ Warning: Файлы могут быть очень большими")
 
 
-def load_onnx_model(model_path: Path):
+def export_to_python(
+    model_main: CatBoostClassifier,
+    model_meta: CatBoostClassifier,
+    config: dict,
+    model_number: int = 0
+) -> None:
     """
-    Load ONNX model for verification (requires onnxruntime)
+    Экспорт в нативный формат CatBoost (.cbm)
+    
+    Использование:
+        >>> from catboost import CatBoostClassifier
+        >>> model = CatBoostClassifier()
+        >>> model.load_model('model.cbm')
+    """
+    symbol = config['symbol']['name']
+    export_path = Path(config['export']['paths']['models'])
+    export_path.mkdir(parents=True, exist_ok=True)
+    
+    # Main model
+    main_cbm = export_path / f"main_{symbol}_{model_number}.cbm"
+    model_main.save_model(str(main_cbm))
+    
+    # Meta model
+    meta_cbm = export_path / f"meta_{symbol}_{model_number}.cbm"
+    model_meta.save_model(str(meta_cbm))
+    
+    print(f"  ✓ CBM export: {main_cbm.name}, {meta_cbm.name}")
+
+
+# === УТИЛИТЫ ===
+
+def validate_onnx_export(onnx_path: Path) -> bool:
+    """
+    Проверка корректности ONNX файла
     
     Args:
-        model_path: Path to ONNX model
-        
+        onnx_path: Путь к ONNX файлу
+    
     Returns:
-        ONNX inference session
+        bool: True если файл валиден
     """
     try:
-        import onnxruntime as ort
+        import onnx
         
-        session = ort.InferenceSession(str(model_path))
+        model = onnx.load(str(onnx_path))
+        onnx.checker.check_model(model)
         
-        return session
-    except ImportError:
-        print("⚠️ onnxruntime not installed, skipping verification")
-        return None
-    except Exception as e:
-        print(f"❌ Error loading ONNX model: {e}")
-        return None
-
-
-def verify_onnx_export(
-    model_path: Path,
-    test_input: np.ndarray
-) -> bool:
-    """
-    Verify that ONNX model can make predictions
-    
-    Args:
-        model_path: Path to ONNX model
-        test_input: Test input array
-        
-    Returns:
-        True if verification successful
-    """
-    session = load_onnx_model(model_path)
-    
-    if session is None:
-        return False
-    
-    try:
-        # Get input name
-        input_name = session.get_inputs()[0].name
-        
-        # Make prediction
-        result = session.run(None, {input_name: test_input})
-        
-        print(f"   ✅ ONNX verification passed")
-        print(f"      Input shape: {test_input.shape}")
-        print(f"      Output shape: {result[0].shape}")
-        
+        print(f"  ✓ ONNX valid: {onnx_path.name}")
         return True
         
     except Exception as e:
-        print(f"   ❌ ONNX verification failed: {e}")
+        print(f"  ✗ ONNX invalid: {e}")
         return False
 
 
-def export_to_cbm(
-    model,
-    output_path: Path
-) -> Path:
+def get_onnx_input_shape(onnx_path: Path) -> tuple:
     """
-    Export model to native CatBoost format
+    Извлечение размерности входа из ONNX модели
     
-    Args:
-        model: CatBoost model
-        output_path: Output file path
-        
     Returns:
-        Path to saved model
+        tuple: (batch_size, n_features)
     """
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    model.save_model(str(output_path), format='cbm')
-    
-    print(f"   ✅ Saved CBM: {output_path.name}")
-    
-    return output_path
+    try:
+        import onnx
+        
+        model = onnx.load(str(onnx_path))
+        input_tensor = model.graph.input[0]
+        
+        shape = [dim.dim_value for dim in input_tensor.type.tensor_type.shape.dim]
+        return tuple(shape)
+        
+    except Exception as e:
+        print(f"  ⚠️ Cannot extract shape: {e}")
+        return None
 
 
-def create_model_metadata(
-    config: dict,
-    r2_score: float,
-    output_path: Path
-) -> Path:
+def create_export_readme(export_path: Path,
+                        symbol: str,
+                        model_number: int,
+                        r2_score: float) -> None:
     """
-    Create metadata file for exported models
-    
-    Args:
-        config: Configuration dictionary
-        r2_score: Model performance score
-        output_path: Path to save metadata
-        
-    Returns:
-        Path to metadata file
+    Создание README файла с инструкциями по установке
     """
-    import json
-    from datetime import datetime
+    readme_text = f"""
+# Model Export for {symbol}
+
+## Files Generated
+1. `catmodel {symbol} {model_number}.onnx` - Main trading model
+2. `catmodel_m {symbol} {model_number}.onnx` - Meta filter model
+3. `{symbol} ONNX include {model_number}.mqh` - MQL5 include file
+
+## Performance
+- R² Score: {r2_score:.4f}
+- Model Number: {model_number}
+
+## Installation Steps
+
+### 1. Copy ONNX Models
+```
+MetaTrader 5/
+└── MQL5/
+    └── Experts/
+        └── Files/
+            ├── catmodel {symbol} {model_number}.onnx
+            └── catmodel_m {symbol} {model_number}.onnx
+```
+
+### 2. Copy Include File
+```
+MetaTrader 5/
+└── MQL5/
+    └── Include/
+        └── {symbol} ONNX include {model_number}.mqh
+```
+
+### 3. Update Expert Advisor
+In your .mq5 file, add:
+```cpp
+#include <{symbol} ONNX include {model_number}.mqh>
+```
+
+### 4. Update Model Sizes
+In `OnInit()`:
+```cpp
+int total_main_features = ArraySize(Periods{symbol}_{model_number});
+int total_meta_features = ArraySize(Periods_m{symbol}_{model_number});
+
+const ulong ExtInputShape[] = {{1, (ulong)total_main_features}};
+const ulong ExtInputShape2[] = {{1, (ulong)total_meta_features}};
+```
+
+### 5. Recompile
+Press F7 in MetaEditor to recompile the Expert Advisor.
+
+## Verification
+Check MetaTrader 5 Experts tab for:
+- "ONNX models loaded successfully"
+- No errors about missing files or wrong dimensions
+
+## Troubleshooting
+- **"File not found"**: Check paths in steps 1-2
+- **"Wrong input shape"**: Verify ExtInputShape matches periods array size
+- **"Model prediction failed"**: Ensure features are calculated correctly
+"""
     
-    metadata = {
-        'export_timestamp': datetime.now().isoformat(),
-        'symbol': config['symbol']['name'],
-        'timeframe': config['symbol']['timeframe'],
-        'direction': config['trading']['direction'],
-        'r2_score': r2_score,
-        'model_config': {
-            'periods': config.get('periods'),
-            'meta_periods': config.get('periods_meta'),
-            'n_clusters': config.get('n_clusters'),
-            'markup': config.get('markup'),
-            'depth': config.get('depth'),
-            'iterations': config.get('iterations')
-        },
-        'risk_management': config['trading']['risk'],
-        'training_data': {
-            'backward': config['data']['backward'],
-            'forward': config['data']['forward'],
-            'full_forward': config['data']['full_forward']
-        }
-    }
+    readme_path = export_path / f"README_{symbol}_{model_number}.md"
+    with open(readme_path, 'w', encoding='utf-8') as f:
+        f.write(readme_text)
     
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(metadata, f, indent=2)
-    
-    print(f"   ✅ Metadata: {output_path.name}")
-    
-    return output_path
+    print(f"  ✓ README: {readme_path.name}")
