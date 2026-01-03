@@ -1,0 +1,161 @@
+# ==================== ДАННЫЕ ====================
+# CSV файлы с историческими данными
+data/raw/*.csv
+data/processed/*.parquet
+data/processed/*.pkl
+
+# ==================== МОДЕЛИ ====================
+# Обученные CatBoost модели
+models/trained/*.cbm
+models/trained/*.bin
+
+# ONNX экспорты
+models/exported/*.onnx
+
+# MQL include файлы (генерируются автоматически)
+models/exported/*.mqh
+
+# Временные файлы CatBoost
+catmodel.h
+meta_catmodel.h
+catboost_info/
+catboost_training.json
+
+# ==================== PYTHON ====================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# Jupyter Notebook
+.ipynb_checkpoints
+notebooks/*.ipynb
+!notebooks/example_*.ipynb
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ==================== IDE ====================
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# ==================== OS ====================
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+
+# ==================== LOGS ====================
+logs/
+*.log
+*.out
+
+# ==================== BACKTEST RESULTS ====================
+results/
+backtest_reports/
+*.png
+!docs/images/*.png
+
+# ==================== METATRADER ====================
+# Скомпилированные файлы MT5
+mql5/Experts/*.ex5
+mql5/Include/*.ex5
+
+# MT5 логи и временные файлы
+*.hst
+*.fxh
+*.dat
+
+# ==================== SECRETS ====================
+# Конфиденциальные конфиги
+config/secrets.yaml
+config/local_*.yaml
+.env
+.env.local
+
+# API ключи
+*.key
+*.pem
+credentials.json
+
+# ==================== TEMP FILES ====================
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# ==================== SPECIFIC ====================
+# Результаты экспериментов
+experiments/
+runs/
+mlruns/
+
+# Кеши данных
+*.cache
+cache/
