@@ -30,7 +30,7 @@ class TestImports:
 
 class TestDataPipeline:
     @pytest.fixture
-    def mock_csv_data(self, tmp_path):
+    def mock_csv_data(tmp_path):
         csv_path = tmp_path / "XAUUSD_H1.csv"
         dates = pd.date_range('2020-01-01', periods=2000, freq='H')
         prices = 1800 + np.cumsum(np.random.randn(2000) * 5)

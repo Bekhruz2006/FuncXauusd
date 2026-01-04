@@ -60,14 +60,18 @@ def check_dependencies():
         'numba', 'matplotlib', 'yaml', 'scipy'
     ]
     
+    # Mapping для пакетов с нестандартными именами импорта
+    import_map = {
+        'scikit-learn': 'sklearn',
+        'yaml': 'yaml'
+    }
+    
     failed = []
     
     for package in required:
         try:
-            if package == 'yaml':
-                __import__('yaml')
-            else:
-                __import__(package.replace('-', '_'))
+            import_name = import_map.get(package, package.replace('-', '_'))
+            __import__(import_name)
             print(f"  ✓ {package}")
         except ImportError:
             failed.append(package)

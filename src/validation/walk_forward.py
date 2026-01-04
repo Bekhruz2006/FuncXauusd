@@ -17,6 +17,7 @@ class WalkForwardConfig:
     noise_level: float = 0.001
     l2_increment: float = 0.5
     depth_decrement: int = 1
+    min_trades_for_eval: int = 30
 
 
 class WalkForwardValidator:

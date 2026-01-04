@@ -424,7 +424,54 @@ class TestDegradationMonitor:
 
 # ==================== ИНТЕГРАЦИОННЫЕ ТЕСТЫ ====================
 
-class TestIntegration
+class TestIntegration:
+    """Интеграционные тесты новых модулей"""
+    
+    def test_full_workflow_with_walk_forward(self, sample_labeled_data, atr_manager):
+        """Тест полного workflow с Walk-Forward"""
+        config = WalkForwardConfig(n_is_blocks=3, n_oos_blocks=2, min_trades_for_eval=5)
+        validator = WalkForwardValidator(config)
+        
+        is_data = sample_labeled_data.iloc[:600]
+        oos_data = sample_labeled_data.iloc[600:800]
+        
+        validator.split_data(is_data, oos_data)
+        
+        assert len(validator.is_blocks) == 3
+        assert len(validator.oos_blocks) == 2
+    
+    def test_atr_with_degradation_monitor(self, sample_price_data, atr_manager, historical_metrics):
+        """Тест интеграции ATR и Degradation Monitor"""
+        # Добавление ATR
+        data_with_atr = atr_manager.add_atr_to_data(sample_price_data)
+        
+        assert 'atr' in data_with_atr.columns
+        
+        # Инициализация монитора
+        monitor = DegradationMonitor(historical_metrics)
+        
+        # Симуляция нескольких сделок
+        for i in range(10):
+            entry = data_with_atr['close'].iloc[i]
+            atr = data_with_atr['atr'].iloc[i]
+            
+            if pd.notna(atr):
+                levels = atr_manager.calculate_levels(entry, atr, 'buy')
+                
+                trade = {
+                    'profit': 5.0 if i % 2 == 0 else -3.0,
+                    'entry_price': entry,
+                    'exit_price': entry + (5.0 if i % 2 == 0 else -3.0),
+                    'direction': 'buy',
+                    'timestamp': data_with_atr.index[i]
+                }
+                
+                monitor.update(trade)
+        
+        assert monitor.metrics.total_trades > 0
+        assert monitor.status in [DegradationStatus.HEALTHY, DegradationStatus.WARNING]
+
+
 
 
 # ==================== ЗАПУСК ====================
