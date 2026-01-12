@@ -1,194 +1,89 @@
-# ==================== ОСНОВНЫЕ ПАРАМЕТРЫ ====================
 project:
-  name: "FuncXauusd"
-  version: "1.0.0"
+  name: "FuncXauusd_Reg"
+  version: "2.1.0"
   
 symbol:
-  name: "XAUUSD_H1"
+  name: "XAUUSD_H1" # Основной файл должен называться XAUUSD_H1.csv
   timeframe: "H1"
 
-# ==================== НАПРАВЛЕНИЕ ТОРГОВЛИ ====================
 trading:
   direction: "buy"
-  
   risk:
     stop_loss: 10.0
     take_profit: 5.0
-    risk_per_trade: 0.005
-    max_positions: 3
-    spread_limit: 25
-    
   labeling:
-    markup: 0.25
     min_bars: 1
-    max_bars: 15
+    max_bars: 24
+    decay: 0.96
 
-# ==================== ВРЕМЕННЫЕ ГРАНИЦЫ ====================
 data:
-  backward: "2004-06-11"
-  forward: "2020-01-01"
-  full_forward: "2026-01-01"
-  
+  backward: "2015-01-01"
+  forward: "2023-01-01"
+  full_forward: "2024-01-01"
   paths:
     raw: "./data/raw"
     processed: "./data/processed"
-    
+  
+  # === MULTIFRAME CONFIGURATION ===
   multiframe:
-    enabled: false
-    timeframes:
-      - "1m"
-      - "5m"
-      - "15m"
-      - "30m"
-      - "1h"
-      - "4h"
-      - "1d"
-      - "1w"
-      - "1Month"
+    enabled: true
+    # Используем доступные файлы: M1, M5, 15M, M30, H4
+    timeframes: 
+      - "M5"
+      - "15M"  # Заметьте, имя файла XAUUSD_15M.csv
+      - "M30"
+      - "H4"
 
-# ==================== ПРИЗНАКИ ====================
-periods: [5, 35, 65, 95, 125, 155, 185, 215, 245, 275]
-periods_meta: [5]
+periods: [14, 24, 50, 96, 200]  # 14ч, 1 день, 2 дня, 4 дня, 8 дней
+periods_meta: [24, 96]
+markup: 0.25 
 
-# ==================== РАЗМЕТКА ====================
-markup: 0.25
-
-# ==================== КЛАСТЕРИЗАЦИЯ ====================
 clustering:
-  algorithm: "kmeans"
-  n_clusters: 8
+  n_clusters: 1 
   random_state: 42
   n_init: 10
 
-# ==================== МОДЕЛЬ ====================
 model:
   main:
-    type: "CatBoostClassifier"
+    type: "CatBoostRegressor"
     params:
-      iterations: 700
-      depth: 5
+      iterations: 1000
+      depth: 6
       learning_rate: 0.03
       l2_leaf_reg: 3
-      eval_metric: "Accuracy"
-      custom_loss: ["Accuracy"]
+      loss_function: "RMSE"
+      eval_metric: "R2"
       verbose: false
-      use_best_model: true
       early_stopping_rounds: 50
       task_type: "CPU"
-      thread_count: -1
       random_seed: 42
   
   meta:
     type: "CatBoostClassifier"
     params:
-      iterations: 350
-      depth: 4
-      learning_rate: 0.03
-      l2_leaf_reg: 3
-      eval_metric: "F1"
-      custom_loss: ["F1"]
+      iterations: 100
+      depth: 3
       verbose: false
-      use_best_model: true
-      early_stopping_rounds: 30
-      task_type: "CPU"
-      thread_count: -1
-      random_seed: 42
+      allow_const_label: true # Разрешить константные метки (на всякий случай)
 
-# ==================== ВАЛИДАЦИЯ ====================
 validation:
-  train_size: 0.75
-  test_size: 0.25
-  shuffle: true
-  stratify: true
-  random_state: 42
-  
+  train_size: 0.8
+  shuffle: false
   criteria:
-    min_class_balance: 0.2
+    min_class_balance: 0.0
     min_samples_per_class: 100
-    max_drawdown_oos: 0.05
-    max_drawdown_oot: 0.10
 
-# ==================== ЭКСПОРТ ====================
+walk_forward:
+  n_is_blocks: 10
+  n_oos_blocks: 5
+  min_r2: 0.005
+  max_drawdown: 0.10
+  noise_level: 0.002
+  l2_increment: 1.0
+  max_retries: 3
+
 export:
   paths:
     models: "./models/trained"
     onnx: "./models/exported"
     mql: "./mql5/Include"
-  
-  formats:
-    - "onnx"
-    - "cbm"
-  
-  onnx:
-    domain: "ai.catboost"
-    model_version: 1
-    opset_version: 12
-
-# ==================== БЭКТЕСТИНГ ====================
-backtest:
-  metrics:
-    - "r2_score"
-    - "sharpe_ratio"
-    - "max_drawdown"
-    - "profit_factor"
-    - "win_rate"
-  
-  plot:
-    enabled: true
-    save_path: "./results/plots"
-
-# ==================== ЛОГИРОВАНИЕ ====================
-logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  
-  files:
-    main: "./logs/training.log"
-    errors: "./logs/errors.log"
-
-# ==================== ПРОИЗВОДИТЕЛЬНОСТЬ ====================
-performance:
-  n_jobs: -1
-  
-  cache:
-    enabled: true
-    path: "./cache"
-  
-  numba:
-    enabled: true
-    parallel: true
-
-# ==================== ВОСПРОИЗВОДИМОСТЬ ====================
-reproducibility:
-  random_seed: 42
-  deterministic: true
-
-# ==================== АВТОПОИСК ГИПЕРПАРАМЕТРОВ ====================
-search:
-  targets:
-    val_accuracy: 0.75
-    r2_score: 0.95
-  
-  max_iterations: 40
-  early_stopping: true
-  
-  space:
-    markup: [0.15, 0.18, 0.2, 0.22, 0.25, 0.28, 0.3, 0.35, 0.4]
-    n_clusters: [6, 7, 8, 9, 10, 11, 12]
-    
-    periods:
-      - [5, 35, 65, 95, 125, 155, 185, 215, 245, 275]
-      - [5, 30, 55, 80, 105, 130, 155, 180, 205, 230]
-      - [5, 25, 45, 65, 85, 105, 125, 145, 165, 185]
-      - [5, 10, 15, 20, 30, 40, 50, 75, 100, 150, 200, 250]
-      - [5, 15, 30, 50, 75, 100, 150, 200]
-    
-    meta_periods:
-      - [5]
-      - [10]
-      - [5, 10]
-      - [5, 15]
-    
-    model_depth: [4, 5, 6, 7]
-    model_iterations: [300, 500, 700, 1000]
-    min_samples: [600, 800, 1000, 1200, 1500]

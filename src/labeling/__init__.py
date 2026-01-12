@@ -1,13 +1,10 @@
-"""Модуль стратегий разметки данных"""
+"""
+Модуль разметки данных.
+Реализует Этап 1: Непрерывная целевая переменная для регрессии.
+"""
 
-from .strategies import (
-    get_labels_one_direction,
-    validate_labels,
-    print_label_distribution
-)
+from .continuous import get_continuous_labels
 
 __all__ = [
-    'get_labels_one_direction',
-    'validate_labels',
-    'print_label_distribution'
+    'get_continuous_labels'
 ]
